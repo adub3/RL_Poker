@@ -1,0 +1,39 @@
+from treys import Deck, Card, Evaluator
+evaluator = Evaluator()
+deck = Deck()
+board = deck.draw(3)
+hand = deck.draw(2)
+player2_hand = deck.draw(2)
+
+Card.print_pretty_cards(board)
+
+board = board +deck.draw(2)
+
+Card.print_pretty_cards(board)
+
+class Player:
+    def __init__(self, name: str, initial_stack: int):
+        self.name = name
+        self.hand = []
+        self.stack = initial_stack
+        self.current_bet = 0
+        self.folded = False
+        self.all_in = False
+
+    def bet(self, amount: int):
+        if amount > self.stack:
+            raise ValueError("Not enough chips to bet")
+        self.stack -= amount
+        self.current_bet += amount
+        return amount
+
+    def receive_card(self, card):
+        self.hand = card
+
+    def clear_hand(self):
+        self.hand = []
+        self.current_bet = 0
+        self.folded = False
+        self.all_in = False
+
+score = _evaluate_hand(bob.hand + board)
