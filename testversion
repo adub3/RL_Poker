@@ -24,13 +24,11 @@ class Player:
     def receive_card(self, card):
         self.hand = card
 
-    def action(self, bet, round, decision = None):
+    def action(self, bet, round):
         self.moved = False
-        if decision != None:
-            return
         while True:
             try:
-                decision = input(f"{self.name}, your stack: {self.stack}. Current bet: {bet}. Raised: {self.moved} Enter 'fold', 'call', 'all-in', or 'raise [amount]': ").strip().lower()
+                decision = input(f"{self.name}, your stack: {self.stack}. Current bet: {bet}. Raised: {self.moved}Enter 'fold', 'call', 'all-in', or 'raise [amount]': ").strip().lower()
                 if decision == "fold":
                     self.folded = True
                     self.bets[round] = 0
@@ -132,7 +130,33 @@ class PokerGame:
         #community_cards = [card.to_treys() for card in self.community_cards]
         Card.print_pretty_cards(self.community_cards + player.hand)
         return self.evaluator.evaluate(self.community_cards, player.hand)
+    """
+    def determine_winner(self) -> List[Player]:
+        best_score = float('inf')
+        best_score = 1000000000
+        winners = []
+        candidates = [player for player in self.players if not player.folded]
+        while candidates != []:
+            for player in candidates:
+                score = self.evaluator.evaluate(self.community_cards, player.hand)
+                if score < best_score:
+                    best_score = score
+                    winners = [player]
+                elif score == best_score:
+                    winners.append(player)
+            for winner in winners:
+                for bet in winner.bets:
+                    if bet == 0:
+                        pass
+                        
+                
 
+        for player in winners:
+            print (player.name)
+            player.stack = player.stack + self.pot/len(winners)
+            self.pot = 0
+
+    """    
     def determine_winner(self):
         active_players = [player for player in self.players if not player.folded]
         if not active_players:
@@ -161,15 +185,135 @@ class PokerGame:
             player.stack += total_won
 
         return [player for player, score in scored_players]
+    """
+    def _betting_round(self, order, round, currentbet = 0, Raised = False): #issue with raising fucks up the order super bad... especially when someone folds... current soln is not working where list is the same so the order still works for the shifting, but doesnt change orders correctly when raised as stack still has same person
+        active_playerscheck = [player for player in self.players if not (player.folded or player.all_in)]
+        active_players = self.players
+        if order > 0:
+            for i in range(order):
+                print(active_players[0].name)
+                while active_players[0].folded or active_players[0].all_in: #changed...
 
-    def _betting_round(self, round, current_bet = 0):
+                    active_players.append(active_players.pop(0))
+                    print("shifted ",active_players)
+                active_players.append(active_players.pop(0)) #shifting order
+                print("shifted ", active_players)
+        index = order
+        order = 0
+        if len(active_players) <= 1:
+            if len(active_players) == 1:
+                # Last player wins the pot
+                winner = active_players[0]
+                winner.stack += self.pot
+                self.pot = 0
+            return
+
+        print(active_playerscheck, "pineapple")
+        print(active_players, "turn order")
+        current_max_bet = max(player.current_bet for player in active_players)
+        currentbet = max(currentbet, current_max_bet)
+        index = order #  add order so doesnt mess up order
+        for player in active_players:
+            print(player.name , player.current_bet)
+        for player in active_players:
+            index = index + 1   #index to know how many to shift when raise
+            print(index, "indexing before call")
+            if player.raised and Raised or (player.folded or player.all_in): #changed...
+                print(player.name, "is out")
+                pass
+            else:
+                decision = player.action(currentbet,round)
+                if decision[0] == "Fold":
+                    pass
+                elif decision[0] == "All In":
+                    print(index, "index after")
+                    if decision[1] > currentbet:
+                        self._betting_round(index, round, decision[1], True) #if raise then shift by index
+                        for player in active_players: #this is so scuffed
+                            self.pot = self.pot + player.current_bet
+                            player.stack = player.stack - player.current_bet
+                            player.current_bet = 0
+                        return
+                elif decision[0] == "Raise":
+                    print(index, "index after")
+                    self._betting_round(index, round, decision[1], True) #if raise then shift by index
+                    for player in active_players: #this is so scuffed
+                        self.pot = self.pot + player.current_bet
+                        player.stack = player.stack - player.current_bet
+                        player.current_bet = 0
+                    return
+        if not Raised:
+            for player in active_players: #this is so scuffed
+                print(f"pot added: {player.current_bet}")
+                self.pot = self.pot + player.current_bet
+                player.stack = player.stack - player.current_bet
+
+                player.current_bet = 0
+        for player in active_players:
+            player.raised = False
+            print(f'{player.name} and {player.raised}')
+        index = 0
+    """
+    """
+    def _betting_round(self, order, round, current_bet=0, raised=False):
+        def handle_pot_collection():
+            for player in active_players:
+                self.pot += player.current_bet
+                player.stack -= player.current_bet
+                player.current_bet = 0
+
+        def shift_player_order(count):
+            for _ in range(count):
+                print(self.players)
+                while active_players[0].folded or active_players[0].all_in:
+                    active_players.append(active_players.pop(0))
+                active_players.append(active_players.pop(0))
+
+        def check_game_end():
+            if len(active_players) <= 1 and len(active_players) == 1:
+                winner = active_players[0]
+                winner.stack += self.pot
+                self.pot = 0
+                return True
+            return False
+
+        active_players = self.players
+        active_playerscheck = [p for p in self.players if not (p.folded or p.all_in)]
+        
+        shift_player_order(order)
+        
+        if check_game_end():
+            return
+
+        current_bet = max(current_bet, max(p.current_bet for p in active_players))
+
+        for index, player in enumerate(active_players, start=order):
+            if player.raised and raised or (player.folded or player.all_in):
+                continue
+                
+            decision = player.action(current_bet, round)
+            
+            if decision[0] in ["All In", "Raise"]:
+                if decision[0] == "All In" and decision[1] <= current_bet:
+                    continue
+                    
+                self._betting_round(index + 1, round, decision[1], True)
+                handle_pot_collection()
+                return
+
+        if not raised:
+            handle_pot_collection()
+            
+        for player in active_players:
+            player.raised = False
+                    
+    """
+    def _betting_round(self, order, round, current_bet = 0):
         active_players = deque(player for player in self.players if not (player.folded or player.all_in))
-        #for i in range(order):
-        #    active_players.rotate(-1)
+        for i in range(order):
+            active_players.rotate(-1)
         betting = True
         while betting:
-            for i in active_players:
-                print (i.name, i.bets)
             try:
                 current_player = active_players[0]
             except:
@@ -196,13 +340,7 @@ class PokerGame:
                     current_player.moved = True
                     active_players.rotate(-1)  # Move to the next player
             else:
-                print('loop should end')
                 betting = False
-        print('end cons')
-        for player in active_players:
-            player.current_bet = 0
-            player.moved = False
-        return
 
     def state_check(self, round):
         #Display the current state of all players and the pot.
@@ -227,21 +365,18 @@ class PokerGame:
         for player in self.players:
             player.clear_hand()
 
+        sb = 5
+        bb = 10
         self._deal_initial_cards()
-        self.players[0].action(0, "preflop", decision = "raise 5")  # Small blind
-        self.players[1].action(0, "preflop", decision = "raise 10")
-        print(self.players[0].current_bet)
-        self._betting_round("preflop") #order diff
+        self.players[0].current_bet = sb  # Small blind
+        self.players[1].current_bet = bb
+        self._betting_round(2, "preflop") #order diff
+        for player in self.players:
+            print(player.bets)
         self.state_check("preflop")
         self._deal_community_cards(3)
-        self._betting_round("flop")
-        self.state_check("flop")
         self._deal_community_cards(1)
-        self._betting_round("turn")
-        self.state_check("turn")
         self._deal_community_cards(1)
-        self._betting_round("river")
-        self.state_check("river")
         self.determine_winner()
         self.pot = 0
         self.state_check("end")
