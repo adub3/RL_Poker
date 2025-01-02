@@ -1,6 +1,7 @@
 #should mostly be working
 #still issues with negativity
 #all in is super confusing
+#ai code
 import random
 from collections import deque
 from typing import List, Tuple
@@ -24,13 +25,15 @@ class Player:
     def receive_card(self, card):
         self.hand = card
 
-    def action(self, bet, round, decision = None):
+    def action(self, bet, round, decision = None): # could def use some tweaking but works for mostly except invalid inputs/bets where the code just dies
         self.moved = False
-        if decision != None:
-            return
+        print
         while True:
             try:
-                decision = input(f"{self.name}, your stack: {self.stack}. Current bet: {bet}. Raised: {self.moved} Enter 'fold', 'call', 'all-in', or 'raise [amount]': ").strip().lower()
+                if decision is None:
+                    decision = input(f"{self.name}, your stack: {self.stack}. Current bet: {bet}. Raised: {self.moved} Enter 'fold', 'call', 'all-in', or 'raise [amount]': ").strip().lower()
+                else: 
+                    pass
                 if decision == "fold":
                     self.folded = True
                     self.bets[round] = 0
@@ -96,10 +99,10 @@ class Player:
                         print("Invalid raise format. Use 'raise [amount]'")
                 
                 print("Invalid input. Use 'fold', 'call', 'all-in', or 'raise [amount]'")
+                decision = None
             except ValueError:
                 print("Invalid raise amount. Please enter a valid number.")
-
-    
+                
     def clear_hand(self):
         self.hand = []
         self.current_bet = 0
@@ -168,12 +171,11 @@ class PokerGame:
         #    active_players.rotate(-1)
         betting = True
         while betting:
-            for i in active_players:
-                print (i.name, i.bets)
             try:
                 current_player = active_players[0]
             except:
                 betting = False
+            #if not all((player.moved or player.folded or player.all_in) for player in active_players):
             if not current_player.moved:
                 decision = current_player.action(current_bet, round)
                 if decision[0] == "Fold":
@@ -195,6 +197,9 @@ class PokerGame:
                 else:  # Default case for "Call" or other actions
                     current_player.moved = True
                     active_players.rotate(-1)  # Move to the next player
+                #else:
+                #    current_player.moved = True
+                #    active_players.rotate(-1)
             else:
                 betting = False
         for player in active_players:
@@ -227,10 +232,13 @@ class PokerGame:
 
         self._deal_initial_cards()
         #still working on small big blind
-        self.players[0].action(0, "preflop", decision = "raise 5")  # Small blind
-        self.players[1].action(0, "preflop", decision = "raise 10")
-        self._betting_round("preflop",10) #order diff
+        bigblind = 10
+        self.players[1].current_bet = bigblind/2  # Small blind
+        self.players[2].current_bet = bigblind
+        self._betting_round("preflop", bigblind) #order diff
         self.state_check("preflop")
+        self.players.insert(0 ,self.players.pop())
+        self.players.insert(0, self.players.pop())
         self._deal_community_cards(3)
         self._betting_round("flop")
         self.state_check("flop")
