@@ -1,0 +1,15 @@
+from poker_logic import *
+
+def selfplay():
+    players = ["Alice", "Bob", "Charlie"]
+    game = PokerGame(players)
+
+    while not game.gamelogic():
+        decision = ["Fold", 0]
+        round = "flop"
+        game.players[0].action(game.current_bet, round, decision)
+        game.nextplayer(decision , game.players)
+    game.players.append(game.players.popleft())
+
+if __name__ == "__main__":
+    selfplay()
