@@ -42,8 +42,7 @@ def test_simulate_game():
         else:
             # Get the legal actions for the current player
             legal_actions = state.legal_actions()
-            print(f"Player {current_player}'s turn. Legal actions: {legal_actions}")
-
+            
             # Choose a random legal action
             action = np.random.choice(legal_actions)
             print(f"Player {current_player} takes action: {action}")
