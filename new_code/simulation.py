@@ -2,8 +2,10 @@ import random
 import numpy as np
 import pyspiel
 
-def test_simulate_game():
-    # Play through a game of two player poker
+from ai import *
+
+def test_simulate_round():
+    # Play through a round of two player poker
 
     game_config = {
         "betting": "nolimit", # Betting style: "limit" or "nolimit"
@@ -40,11 +42,11 @@ def test_simulate_game():
             state.apply_action(action)
 
         else:
-            # Get the legal actions for the current player
-            legal_actions = state.legal_actions()
+            # Get the legal actions for the current player without all ins cause they're boring
+            actions_excluding_all_in = get_actions_without_allin(state)
             
-            # Choose a random legal action
-            action = np.random.choice(legal_actions)
+            # Choose a random action
+            action = np.random.choice(actions_excluding_all_in)
             print(f"Player {current_player} takes action: {action}")
             state.apply_action(action)
 
@@ -52,9 +54,9 @@ def test_simulate_game():
         print(state)
 
     # Print the final state and returns (utilities)
-    print("Final state:")
+    print("-----Final state-----:")
     print(state)
     print(f"Returns: {state.returns()}")
 
 if __name__ == "__main__":
-    test_simulate_game()
+    test_simulate_round()
