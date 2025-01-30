@@ -36,18 +36,7 @@ def parse_poker_string(poker_string):
     
     
     return parsed_data
-def abstraction(data): #func takes player info and abstracts it into bins
-#changing data into dict
-    data_dict = parse_poker_string(data)
-    cards: list = []
-    print(data_dict['Private'] + data_dict['Public'], "bannan")
-    for card in data_dict['Private'] and data_dict['Public']:
-        cards.append(card) # list of all cards
-    handstr = eval7.handtype(eval7.evaluate([eval7.Card(s) for s in cards])) #type of
-    return "A"
-    #parsed data has 'round, player, pot, money, priv, pub, seq (ignore money only based on priv pub seq and seq)
-# Example usage
-import eval7
+
 
 def abstraction(data):
     """
@@ -58,93 +47,121 @@ def abstraction(data):
         board_cards (list of eval7.Card): Community cards on the board.
 
     Returns:
-        dict: Categorized hand information.
+        dict: Categorized hand information. (eventually transformed into a string)
     """
     data_dict = parse_poker_string(data)
-    all_cards = data_dict['Private'] + data_dict['Public']
-    hand_cards = data_dict['Private']
-    board_cards = data_dict['Public']
-    hand_rank = eval7.evaluate(all_cards)
-    hand_type = eval7.handtype(hand_rank)
-
+    all_cards = data_dict['Private'] + data_dict['Public'] #data_dict[priv] are user cards, else is non user
+    eval7allcards = [eval7.Card(s) for s in all_cards]
+    hand_type = handstr = eval7.handtype(eval7.evaluate(eval7allcards)) #eval7 can identify what type of hand it is but idk if strength of hand like Ace pair etc. Maybe some func
+    print(data_dict["Public"])
     categorized_hand = {
         "hand_type": hand_type,
-        "rank": hand_rank,
         "details": {}
     }
+    community_cards = [eval7.Card(c) for c in data_dict['Public']]
+    rank_counts = {}
+    for card in eval7allcards:
+        rank_counts[card.rank] = rank_counts.get(card.rank, 0) + 1
+    rank_counts_board = {}
+    rank_counts_board
+    for card in [eval7.Card(s) for s in data_dict["Public"]]:
+        rank_counts_board[card.rank] = rank_counts.get(card.rank, 0) + 1
+    if hand_type == "High Card": #str starts w/ 1
+        highest_card = max(all_cards, key=lambda card: card.rank)
+        if highest_card == 14 or 13:
+            return "11"
+        else:
+            return "12"
+    elif hand_type == "Pair" or hand_type == "Two Pair": #str starts w/ 2
+        # Extract community cards
+        
+        # Find the highest pair
+        pairs = sorted([rank for rank, count in rank_counts.items() if count >= 2], reverse=True)
+        if not pairs:
+            return None  # No pair found
 
-    if hand_type == "High Card":
-        categorized_hand["details"] = {
-            "high_card": max(hand_cards, key=lambda card: card.rank),
-            "is_mid_low": any(card.rank < eval7.Card("9s").rank for card in hand_cards)
-        }
+        highest_pair = pairs[0]  # The highest ranked pair
 
-    elif hand_type == "Pair":
-        pair_rank = max(card.rank for card in hand_cards if hand_cards.count(card) > 1)
-        categorized_hand["details"] = {
-            "pair_rank": pair_rank,
-            "category": "Low" if pair_rank <= eval7.Card("8s").rank else
-                        "Mid" if pair_rank <= eval7.Card("Js").rank else "High",
-            "relative_to_board": ""  # To be computed based on board context
-        }
+        # Determine objective value Eval7 treats 2 = 0, 3 = 1, ... A = 12
+        if highest_pair <= 6:
+            objective_value = "2-8"
+        elif highest_pair <= 9:
+            objective_value = "9-11" 
+        elif highest_pair <= 11:
+            objective_value = "12-13"
+        else:
+            objective_value = "Overpair"
 
-    elif hand_type == "Two Pair":
-        # Identify ranks of the two pairs
-        paired_ranks = [card.rank for card in all_cards if all_cards.count(card) == 2]
-        categorized_hand["details"] = {
-            "paired_ranks": sorted(set(paired_ranks), reverse=True)
-        }
+        # Get board ranks
+        board_ranks = sorted(set(card.rank for card in community_cards), reverse=True)
 
+        # Determine relative value
+        if highest_pair in board_ranks:
+                # Pair is on the board
+            if len(board_ranks) >= 3 and highest_pair == board_ranks[-1]:  # Lowest pair for 3 cards
+                relative_value = "Low Pair"
+            elif len(board_ranks) >= 4 and highest_pair in board_ranks[-2:]:  # Bottom two for 4+ cards
+                relative_value = "Low Pair"
+            elif len(board_ranks) == 3 and highest_pair == board_ranks[1]:  # Middle pair for 3 cards
+                relative_value = "Middle Pair"
+            elif len(board_ranks) == 5 and highest_pair == board_ranks[2]:  # Middle pair for 5 cards
+                relative_value = "Middle Pair"
+            else:
+                relative_value = "Top Pair"
+        else:
+            relative_value = "Overpair"
+
+        return {  #this function wants to be broken down into a return of two numbers where first is either 1 or 2 depending on hand str, then the second is the obj ranking i.e. 3i+j where i is relative rank and j is obj rank and 0 is over or stmn of the sort
+            "Highest Pair": highest_pair + 2,
+            "Objective Value": objective_value,
+            "Relative Value": relative_value
+            
+            }
     elif hand_type == "Trips":
-        trips_rank = max(card.rank for card in all_cards if all_cards.count(card) == 3)
-        categorized_hand["details"] = {
-            "trips_rank": trips_rank,
-            "is_set": all_cards.count(hand_cards[0]) == 3 or all_cards.count(hand_cards[1]) == 3,
-            "category": "Low" if trips_rank <= eval7.Card("8s").rank else
-                        "Mid" if trips_rank <= eval7.Card("Js").rank else "High"
-        }
+        board_ranks = sorted(set(card.rank for card in community_cards), reverse=True)
+        
+        # Determine if the hand is trips or a set
+        pairs = sorted([rank for rank, count in rank_counts.items() if count >= 2], reverse=True)
+        board_pairs = sorted([rank for rank, count in rank_counts_board.items() if count >= 2], reverse=True)
+        highest_pair = pairs[0]
+        if board_pairs:
+            typetrips = "Set"
+            print("set bullshit worked")
+        else:
+            typetrips = "Trips"
+        if highest_pair in board_ranks:
+            # Pair is on the board
+            if len(board_ranks) >= 3 and highest_pair == board_ranks[-1]:  # Lowest pair for 3 cards
+                relative_value = "Low Pair"
+            elif len(board_ranks) >= 4 and highest_pair in board_ranks[-2:]:  # Bottom two for 4+ cards
+                relative_value = "Low Pair"
+            elif len(board_ranks) == 3 and highest_pair == board_ranks[1]:  # Middle pair for 3 cards
+                relative_value = "Middle Pair"
+            elif len(board_ranks) == 5 and highest_pair == board_ranks[2]:  # Middle pair for 5 cards
+                relative_value = "Middle Pair"
+            else:
+                relative_value = "Top Pair"
+        # Relative strength evaluation for trips
+        return{
+            "Trip_types": typetrips,
+            "Relative Value": relative_value
+            }
 
     elif hand_type == "Full House":
-        # Evaluate full house ranking
-        trip_rank = max(card.rank for card in all_cards if all_cards.count(card) == 3)
-        pair_rank = max(card.rank for card in all_cards if all_cards.count(card) == 2)
-        categorized_hand["details"] = {
-            "trip_rank": trip_rank,
-            "pair_rank": pair_rank,
-            "is_two_card_fh": trip_rank in [card.rank for card in hand_cards] and \
-                              pair_rank in [card.rank for card in hand_cards]
-        }
-
+        return
     elif hand_type == "Straight":
-        highest_card = max(all_cards, key=lambda card: card.rank)
-        categorized_hand["details"] = {
-            "highest_card": highest_card,
-            "is_high_straight": highest_card.rank >= eval7.Card("Qs").rank
-        }
-
+        return
     elif hand_type == "Flush":
-        flush_suit = max([card.suit for card in all_cards if \
-                          sum(1 for c in all_cards if c.suit == card.suit) >= 5],
-                         key=lambda suit: suit)
-        categorized_hand["details"] = {
-            "flush_suit": flush_suit,
-            "is_high_flush": any(card.rank >= eval7.Card("Qs").rank for card in all_cards if card.suit == flush_suit)
-        }
+        return
     elif hand_type == "Quads":
-        quad_rank = max(card.rank for card in all_cards if all_cards.count(card) == 4)
-        categorized_hand["details"] = {
-            "quad_rank": quad_rank,
-            "quads_on_board": len([card for card in board_cards if board_cards.count(card) == 4]) > 0
-        }
+        return
 
     return categorized_hand
 
 # Example usage
-poker_string = "[Round 0][Player: 0][Pot: 40000][Money: 19900 0][Private: Tc3h][Public: AcAdAhTh][Sequences: cr20000]"
+poker_string = "[Round 0][Player: 0][Pot: 40000][Money: 19900 0][Private: 8c8h][Public: 3s4c5d8sJs][Sequences: cr20000]"
 
-hole_cards = [eval7.Card("As"), eval7.Card("Kh")]
-board = [eval7.Card("2d"), eval7.Card("7c"), eval7.Card("Jc"), eval7.Card("8d"), eval7.Card("5h")]
-result = categorize_hand(hole_cards, board)
+result = abstraction(poker_string)
 print(result)
 # Print the parsed dictionary
 abstraction(poker_string)
