@@ -24,13 +24,24 @@ class Player:
     def receive_card(self, card):
         self.hand = card
 
+    def response(self):
+        x = random.randint(1,3)
+        if x == 1:
+            return "call"
+        if x == 2:
+            return "fold"
+        if x == 3:
+            num = random.randint(1,10)
+            return f"raise {num}"
+        
+
     def action(self, bet, round, decision = None):
         self.moved = False
         if decision != None:
             return
         while True:
             try:
-                decision = input(f"{self.name}, your stack: {self.stack}. Current bet: {bet}. Raised: {self.moved} Enter 'fold', 'call', 'all-in', or 'raise [amount]': ").strip().lower()
+                decision = self.response()
                 if decision == "fold":
                     self.folded = True
                     self.bets[round] = 0
@@ -150,7 +161,7 @@ class PokerGame:
                 player_bet = player.bets[round_name]
                 if player_bet > 0:
                     round_winnings = 0
-                    for other_player in active_players:
+                    for other_player in self.players:
                         if round_name in other_player.bets:
                             win_amount = min(player_bet, other_player.bets[round_name])
                             round_winnings += win_amount
@@ -168,6 +179,8 @@ class PokerGame:
         #    active_players.rotate(-1)
         betting = True
         while betting:
+            if len(active_players) == 1:
+                return
             for i in active_players:
                 print (i.name, i.bets)
             try:
@@ -224,7 +237,7 @@ class PokerGame:
 
         for player in self.players:
             player.clear_hand()
-
+        active_players = deque(player for player in self.players if not (player.folded or player.all_in))
         self._deal_initial_cards()
         #still working on small big blind
         self.players[0].action(0, "preflop", decision = "raise 5")  # Small blind
@@ -244,13 +257,21 @@ class PokerGame:
         self.pot = 0
         self.state_check("end")
 
+        
     def play_game(self, num_rounds: int = 3):
         self.players = [player for player in self.players if player.stack > 0]
         for _ in range(num_rounds):
             self.play_round()
             self.players.append(self.players.pop(0))
 
-
+# for i in range(num_games):
+#     while game not terminal:
+#         y, move = ai(game)
+#         x = player.make_move(move)
+#       
+#         data.append(x, y)
+#
+#     data.save
 # Example usage
 
 if __name__ == "__main__":

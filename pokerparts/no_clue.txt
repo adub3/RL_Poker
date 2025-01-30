@@ -1,0 +1,12 @@
+#class cfr:
+    ...
+    ...
+
+    node
+
+
+should have folder w/ files:
+    -preflop.strat
+    -flop.strat
+    -post.strat
+    -

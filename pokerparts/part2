@@ -1,0 +1,6 @@
+import numpy as np
+
+# Load from binary file
+action_space = np.load("action_space.npy")
+
+print("Action Space:", action_space)

@@ -1,7 +1,7 @@
 # for i in range(num_games):
 #     while game not terminal:
 #         y, move = ai(game)
-#         x = game.make_move(move)
+#         x = player.make_move(move)
 #       
 #         data.append(x, y)
 #
@@ -13,7 +13,16 @@
 
 
 
-
+# for i in range(num_games):
+#     while game not terminal:
+#            betting round:
+#               y, move = ai(game)
+#               x = player.make_move(move)
+#       
+#         data.append(x, y)
+#
+#     data.save
+#
 
 
 
