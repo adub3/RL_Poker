@@ -41,7 +41,7 @@ class NodeData:
         self.policy = policy
         self.visited = False
 
-def generate_self_play_tree():
+def playout_game_with_tree():
     # Play through a game and save it to a treelib tree
     
     # Variable hierarchy:
@@ -99,6 +99,9 @@ def generate_self_play_tree():
         node = new_node
         state = new_state
     
+    return tree
+
+def traverse_tree(tree):
     # Tree traversal example
     node = tree.get_node("root")
     
@@ -111,4 +114,5 @@ def generate_self_play_tree():
         node = child
 
 if __name__ == "__main__":
-    generate_self_play_tree()
+    ex_tree = playout_game_with_tree()
+    traverse_tree(ex_tree)
