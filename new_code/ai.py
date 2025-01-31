@@ -74,6 +74,16 @@ def generate_self_play_tree():
             action = np.random.choice(action_list, p=prob_list)
             state.apply_action(action)
         else: # Decision node
+
+            # Example code for using a strategy:
+            if False:
+                strategy = {}
+                infostate = ""
+                value, policy = strategy[infostate] # Not sure how to use value
+                policy_mask = policy * state.legal_actions() # Set invalid actions to a policy of 0
+
+                action = np.random.choice(legal_actions, p=policy_mask)
+
             legal_actions = state.legal_actions()
             
             action = np.random.choice(legal_actions)
@@ -89,14 +99,16 @@ def generate_self_play_tree():
         node = new_node
         state = new_state
     
-    # Traverse Tree
+    # Tree traversal example
     node = tree.get_node("root")
     
     # Each node should only have one child
     while not node.is_leaf():
         child_id = node.successors(tree.identifier)[0]
-        node = tree.get_node(child_id)
-        print(node.data.state)
+        child = tree.get_node(child_id)
+        print(child.data.state)
+
+        node = child
 
 if __name__ == "__main__":
     generate_self_play_tree()
