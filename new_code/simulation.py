@@ -1,25 +1,10 @@
-import random
 import numpy as np
-import pyspiel
+import time
 
 from ai import *
 
 def test_simulate_round():
     # Play through a round of two player poker
-
-    game_config = {
-        "betting": "nolimit", # Betting style: "limit" or "nolimit"
-        "numPlayers": 2,      # Number of players
-        "numRounds": 4,       # Number of betting rounds (preflop, flop, turn, river)
-        "blind": "100 50",    # Blinds (small blind and big blind)
-        "firstPlayer": "1",   # First player to act
-        "numSuits": 4,        # Number of suits in the deck
-        "numRanks": 13,       # Number of ranks in the deck
-        "numHoleCards": 2,    # Number of hole cards per player
-        "numBoardCards": "0 3 1 1",  # Number of board cards per round
-        "stack": "20000 20000",  # Starting stack sizes for each player
-    }
-
     # Load the Universal Poker game with Texas Hold'em configuration
     game = pyspiel.load_game("universal_poker", game_config)
 
@@ -52,6 +37,7 @@ def test_simulate_round():
 
         # Print the current state
         print(state)
+        time.sleep(0.1)
 
     # Print the final state and returns (utilities)
     print("-----Final state-----:")
