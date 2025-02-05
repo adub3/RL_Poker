@@ -106,6 +106,8 @@ def playout_game_with_tree() -> treelib.Tree:
         node = new_node
         state = new_state
     
+    print(state)
+    print(state.rewards())
     return tree
 
 def adjust_policy_tree_traversal_example(tree: treelib.Tree, reward: list[int, int], strategy=None) -> None:
@@ -137,6 +139,94 @@ def adjust_policy_tree_traversal_example(tree: treelib.Tree, reward: list[int, i
         child_id = node.successors(tree.identifier)[0]
         child = tree.get_node(child_id)
         node = child
+
+def MCCFR(state, player: int, strategy, regrets):
+    """
+    Performs Counterfactual Regret.
+    
+    Here I'm not using treelib.Node or NodeData, because it's easier.
+
+    Args:
+        state: The current state of the game.
+        player (int): The identifier of the player for whom CFR is computed.
+    """
+    
+    if state.is_terminal():
+        return state.rewards()[player] # Get the reward for the player
+    
+    # elif player not in range(state.num_players()):
+        # This case should never occur
+
+    elif state.is_chance_node():
+        new_state = state.clone() # Make a copy
+
+        outcomes_with_probs = new_state.chance_outcomes()
+        action_list, prob_list = zip(*outcomes_with_probs)
+
+        action = np.random.choice(action_list, p=prob_list) # Choose a random "action"
+        new_state.apply_action(action)
+    
+        return MCCFR(new_state, player, strategy, regrets)
+    
+    elif state.current_player() == player:
+        strategy = None
+
+        value = 0
+        action_space = state.legal_actions()
+        policy_list = calculate_strategy("infostate-xyz", strategy, regrets)["infostate-xyz"]
+        # MATCH POLICY AND ACTIONS TOGETHER, AND SOFTMAX
+
+        action_value_list = []
+        for action, policy in zip(action_space, policy_list):
+            new_state = state.clone()
+            new_state.apply_action(action)
+
+            action_value = MCCFR(new_state, player, strategy, regrets)
+            action_value_list.append(action_value)
+
+            value = value + action_value * policy
+        
+        # Update regrets
+        for action in action_space:
+            regrets["infostate-xyz"][action] = regrets["infostate-xyz"][action] + action_value_list[action] - value
+        
+        return value
+    else: # I believe this case occurs when it's the other player's turn
+        new_state = state.clone()
+
+        policy = calculate_strategy(None, strategy, regrets)["infostate-xyz"]
+        action_space = state.legal_actions()
+
+        action = np.random.choice(action_space, p=policy)
+        new_state.apply_action(action)
+        return MCCFR(new_state, player, strategy, regrets)
+
+def calculate_strategy(state, strategy, regrets):
+    """
+    Uses regrets to update the strategy.
+    
+    Why is it called calculate
+    """
+    sum = 0
+
+    infostate = None
+
+    policy = strategy[infostate]
+    node_regrets = regrets[infostate]
+
+    action_size = len(state.legal_actions())
+
+    for regret in node_regrets:
+        sum += max(0, regret)
+    
+    # MATCH REGRETS TO POLICY
+    for i, regret in enumerate(node_regrets):
+        if sum > 0:
+            policy[i] = max(0, regret) / sum
+        else:
+            policy[i] = 1 / action_size
+    
+    return strategy
 
 if __name__ == "__main__":
     ex_tree = playout_game_with_tree()
