@@ -1,5 +1,6 @@
 import re
 import eval7
+import math
 
 #Notes:
 # trips and top pair same some similar code that could be combined maybe better to write a func that just sees the highest card on the board and matches it to the card in hand or smtn
@@ -41,8 +42,57 @@ def parse_poker_string(poker_string):
     
     return parsed_data
 
+def abstractbetting(sequence, initial_pot):
+    result = ""
+    current_number = ""
+    current_pot = int(initial_pot)
+    future_bets = []
+    
+    # First pass: collect all bets
+    temp_num = ""
+    for char in sequence:
+        if char.isdigit():
+            temp_num += char
+        elif temp_num:
+            future_bets.append(int(temp_num))
+            temp_num = ""
+    if temp_num:
+        future_bets.append(int(temp_num))
+    
+    # Second pass: process sequence
+    bet_index = 0
+    for char in sequence:
+        if char == 'c':
+            result += 'c'
+        elif char == 'r':
+            if current_number:
+                number = int(current_number)
+                # Calculate remaining future bets
+                remaining_bets = sum(future_bets[bet_index + 1:])
+                # Adjust pot for current calculation
+                adjusted_pot = current_pot - remaining_bets
+                processed_number = math.floor(math.log(number/adjusted_pot + 1) * 4)
+                result += str(processed_number)
+                current_pot += number  # Update pot for next calculations
+                current_number = ""
+                bet_index += 1
+            result += 'r'
+        elif char.isdigit():
+            current_number += char
+    
+    # Process any remaining number at the end
+    if current_number:
+        number = int(current_number)
+        processed_number = math.floor(math.log(number/current_pot + 1) * 4)
+        result += str(processed_number)
+    
+    return result
 
-def abstraction(data):
+# Example usage
+
+
+
+def abstractioncards(data):
     """
     Categorize a poker hand based on its type and rank.
 
@@ -63,17 +113,24 @@ def abstraction(data):
         "hand_type": hand_type,
         "details": {}
     }
-
+    print(data_dict)
     community_cards = [eval7.Card(c) for c in data_dict['Public']]
 
     rank_counts = {} #Rank counts for whole board
+
     for card in eval7allcards:
         rank_counts[card.rank] = rank_counts.get(card.rank, 0) + 1
 
     rank_counts_board = {} #Rank counts  for just the board, also gives implied information on how paired the board is
+
     for card in [eval7.Card(s) for s in data_dict["Public"]]:
         rank_counts_board[card.rank] = rank_counts.get(card.rank, 0) + 1
-    
+
+    rank_counts_priv = {}
+
+    for card in [eval7.Card(s) for s in data_dict["Private"]]:
+        rank_counts_priv[card.rank] = rank_counts.get(card.rank, 0) + 1
+
     if hand_type == "High Card": #str starts w/ 1
         highest_card = max(all_cards, key=lambda card: card.rank)
         if highest_card == 14 or 13:
@@ -134,9 +191,60 @@ def abstraction(data):
                 "Type": typetrips
             }
 
+
     elif hand_type == "Full House":
-        
-        return
+        total_freq = rank_counts
+        pocket_freq = rank_counts_priv
+        print("Total frequencies (all cards):", total_freq)
+        print("Pocket frequencies:", pocket_freq)
+
+        # Identify the best triple: the highest rank with at least 3 occurrences.
+        triple_rank = None
+        for r in sorted(total_freq.keys(), reverse=True):
+            if total_freq[r] >= 3:
+                triple_rank = r
+                break
+
+        if triple_rank is None:
+            return {"Error": "No valid triple found for a full house."}
+
+        # Identify the best pair from a different rank: the highest rank (≠ triple_rank) with at least 2 occurrences.
+        pair_rank = None
+        for r in sorted(total_freq.keys(), reverse=True):
+            if r == triple_rank:
+                continue
+            if total_freq[r] >= 2:
+                pair_rank = r
+                break
+
+        if pair_rank is None:
+            return {"Error": "No valid pair found for a full house."}
+
+        # Count how many pocket cards contributed to the triple and the pair.
+        # The .get() method retrieves the count for a given rank (using our integer rank) or returns 0 if not found.
+        pocket_used_triple = pocket_freq.get(triple_rank, 0)
+        pocket_used_pair   = pocket_freq.get(pair_rank, 0)
+        pocket_used_total  = pocket_used_triple + pocket_used_pair
+
+        # Debug prints to show the counts:
+        print(f"Triple rank {triple_rank} occurs {total_freq[triple_rank]} times overall; "
+            f"in pocket: {pocket_used_triple}")
+        print(f"Pair rank {pair_rank} occurs {total_freq[pair_rank]} times overall; "
+            f"in pocket: {pocket_used_pair}")
+
+        if pocket_used_total == 2:
+            used_cards = "Two pocket cards used"
+        elif pocket_used_total == 1:
+            used_cards = "One pocket card used"
+        else:
+            used_cards = f"{pocket_used_total} pocket cards used"
+
+        return {
+            "hand_type": "Full House",
+            "Triple Rank": triple_rank,
+            "Pair Rank": pair_rank,
+            "Used Pocket Cards": used_cards
+        }
     elif hand_type == "Straight":
         return
     elif hand_type == "Flush":
@@ -147,8 +255,8 @@ def abstraction(data):
     return categorized_hand
 
 # Example usage
-poker_string = "[Round 0][Player: 0][Pot: 40000][Money: 19900 0][Private: 8c8h][Public: 3s4c5d8sJs][Sequences: cr20000]"
+poker_string = "[Round 0][Player: 0][Pot: 40000][Money: 19900 0][Private: 8c8h][Public: 3sJc5d8sJs][Sequences: cr20000]"
 
-result = abstraction(poker_string)
+result = abstractioncards(poker_string)
 print(result)
 # Print the parsed dictionary
