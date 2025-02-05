@@ -40,8 +40,9 @@ class NodeData:
         self.value = value
         self.policy = policy
         self.visited = False
+        self.action_taken = None
 
-def playout_game_with_tree():
+def playout_game_with_tree() -> treelib.Tree:
     # Play through a game and save it to a treelib tree
     
     # Variable hierarchy:
@@ -67,12 +68,16 @@ def playout_game_with_tree():
     state = node.data.state
 
     while not state.is_terminal():
-        if state.is_chance_node(): # Chance node
-            outcomes_with_probs = state.chance_outcomes()
+        # Create a copy of the state
+        # This will become a child of the current node
+        new_state = state.clone()
+
+        if new_state.is_chance_node(): # Chance node
+            outcomes_with_probs = new_state.chance_outcomes()
             action_list, prob_list = zip(*outcomes_with_probs)
 
             action = np.random.choice(action_list, p=prob_list)
-            state.apply_action(action)
+            new_state.apply_action(action)
         else: # Decision node
 
             # Example code for using a strategy:
@@ -80,17 +85,19 @@ def playout_game_with_tree():
                 strategy = {}
                 infostate = ""
                 value, policy = strategy[infostate] # Not sure how to use value
-                policy_mask = policy * state.legal_actions() # Set invalid actions to a policy of 0
+                policy_mask = policy * new_state.legal_actions() # Set invalid actions to a policy of 0
 
                 action = np.random.choice(legal_actions, p=policy_mask)
 
-            legal_actions = state.legal_actions()
+            legal_actions = new_state.legal_actions()
             
             action = np.random.choice(legal_actions)
-            state.apply_action(action)
+            new_state.apply_action(action)
+
+            # Update node info
+            node.data.action_taken = action
         
-        # Save a copy of the state to the tree
-        new_state = state.clone()
+        # Save the copy of the state to the tree
         new_nodedata = NodeData(new_state)
         
         new_node = tree.create_node(data=new_nodedata, parent=node.identifier)
@@ -101,18 +108,36 @@ def playout_game_with_tree():
     
     return tree
 
-def traverse_tree(tree):
+def adjust_policy_tree_traversal_example(tree: treelib.Tree, reward: list[int, int], strategy=None) -> None:
     # Tree traversal example
     node = tree.get_node("root")
     
     # Each node should only have one child
     while not node.is_leaf():
+        state = node.data.state
+
+        if not state.is_chance_node():
+            current_player = state.current_player()
+            action_space = state.legal_actions()
+            action_taken = node.data.action_taken
+            
+            current_player_reward = reward[current_player]
+
+            # Example code (This is not CFR, this is some bullshit)
+            if False:
+                new_strategy = strategy.copy()
+
+                for i, action in enumerate(action_space):
+                    reward_derivative = learning_rate * current_player_reward # For the action taken, adjust it relative to the reward
+                    if action != action_taken:
+                        reward_derivative = -reward_derivative 
+
+                    new_strategy["infostate-xyz"][i] += reward_derivative
+
         child_id = node.successors(tree.identifier)[0]
         child = tree.get_node(child_id)
-        print(child.data.state)
-
         node = child
 
 if __name__ == "__main__":
     ex_tree = playout_game_with_tree()
-    traverse_tree(ex_tree)
+    adjust_policy_tree_traversal_example(ex_tree, [-200, 200])
