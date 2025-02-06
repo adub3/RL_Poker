@@ -6,6 +6,8 @@ import math
 # trips and top pair same some similar code that could be combined maybe better to write a func that just sees the highest card on the board and matches it to the card in hand or smtn
 #not rlly sure whats best here
 
+#(1: High Card, 2: Pair, 3: Trips, 4: Straight, 5: Flush, 6: Full House, 7: Quads, 8: Straight Flush and ...)
+
 def parse_poker_string(poker_string):
     # Define a regex pattern to extract key-value pairs inside the brackets
     pattern = r'\[(.*?)\]'
@@ -42,7 +44,7 @@ def parse_poker_string(poker_string):
     
     return parsed_data
 
-def abstractbetting(sequence, initial_pot):
+def abstractbetting(sequence, initial_pot): #abstracts raises into floor(math.log(number/adjusted_pot + 1) * 4) 
     result = ""
     current_number = ""
     current_pot = int(initial_pot)
@@ -122,21 +124,20 @@ def abstractioncards(data):
         rank_counts[card.rank] = rank_counts.get(card.rank, 0) + 1
 
     rank_counts_board = {} #Rank counts  for just the board, also gives implied information on how paired the board is
+    suit_counts_board = {}  # Suit counts for just the board
 
     for card in [eval7.Card(s) for s in data_dict["Public"]]:
         rank_counts_board[card.rank] = rank_counts.get(card.rank, 0) + 1
-
-    rank_counts_priv = {}
-
-    for card in [eval7.Card(s) for s in data_dict["Private"]]:
-        rank_counts_priv[card.rank] = rank_counts.get(card.rank, 0) + 1
+        suit_counts_board[card.suit] = suit_counts_board.get(card.suit, 0) + 1
 
     if hand_type == "High Card": #str starts w/ 1
         highest_card = max(all_cards, key=lambda card: card.rank)
-        if highest_card == 14 or 13:
-            return "11"
+        if highest_card == 14:
+            abtype = "11"
+        if highest_card == 13:
+            abtype = "12"
         else:
-            return "12"
+            abtype = "13"
     elif hand_type == "Pair" or hand_type == "Two Pair" or hand_type == "Trips": #str starts w/ 2
         # Extract community cards
         
@@ -148,11 +149,11 @@ def abstractioncards(data):
         if hand_type == "Pair" or hand_type == "Two Pair":
             # Determine objective value Eval7 treats 2 = 0, 3 = 1, ... A = 12
             if highest_pair <= 6:
-                objective_value = "2-8"
+                objective_value = 0
             elif highest_pair <= 9:
-                objective_value = "9-11" 
+                objective_value = 1
             elif highest_pair <= 11:
-                objective_value = "12-13"
+                objective_value = 2
             else:
                 objective_value = "Overpair"
         else:
@@ -177,82 +178,62 @@ def abstractioncards(data):
                 relative_value = "Top Pair"
         else:
             relative_value = "Overpair"
-        if hand_type == "Pair" or hand_type == "Two Pair":
-            return {  #this function wants to be broken down into a return of two numbers where first is either 1 or 2 depending on hand str, then the second is the obj ranking i.e. 3i+j where i is relative rank and j is obj rank and 0 is over or stmn of the sort
-                "Highest Pair": highest_pair + 2,
-                "Objective Value": objective_value,
-                "Relative Value": relative_value,
-                "Ranking": hand_type
-                }
-        else:
-            return {
-                "Relative Value": relative_value,
-                "Ranking": hand_type,
-                "Type": typetrips
-            }
-
+        if hand_type == "Pair":
+            abtype = "2"
+        if hand_type == "Two Pair":
+            abtype = "3"
+        if hand_type == "Pair" or "Two Pair":
+            if relative_value == "Low":
+                abtype = abtype + str(1+objective_value*3)
+            if relative_value == "Middle":
+                abtype = abtype + str(2+objective_value*3)
+            if relative_value == "Top Pair":
+                abtype = abtype + str(3+objective_value*3)
+            if relative_value == "Overpair" and objective_value == "Overpair":
+                abtype = abtype + "0"
+        if hand_type == 'Trips':
+            abtype = "4"
+            if relative_value == "Set":
+                abtype = abtype + str(objective_value * 3 + 1)
+            else:
+                abtype = abtype + str(objective_value * 3 + 0)
 
     elif hand_type == "Full House":
-        total_freq = rank_counts
-        pocket_freq = rank_counts_priv
-        print("Total frequencies (all cards):", total_freq)
-        print("Pocket frequencies:", pocket_freq)
+        rank_counts_board = {}
 
-        # Identify the best triple: the highest rank with at least 3 occurrences.
-        triple_rank = None
-        for r in sorted(total_freq.keys(), reverse=True):
-            if total_freq[r] >= 3:
-                triple_rank = r
-                break
+        # Count the number of ranks that appear exactly twice
+        num_pairs = sum(1 for count in rank_counts_board.values() if count == 2)
 
-        if triple_rank is None:
-            return {"Error": "No valid triple found for a full house."}
+        # Check if there is at least one triplet
+        has_trip = any(count == 3 for count in rank_counts_board.values())
 
-        # Identify the best pair from a different rank: the highest rank (≠ triple_rank) with at least 2 occurrences.
-        pair_rank = None
-        for r in sorted(total_freq.keys(), reverse=True):
-            if r == triple_rank:
-                continue
-            if total_freq[r] >= 2:
-                pair_rank = r
-                break
-
-        if pair_rank is None:
-            return {"Error": "No valid pair found for a full house."}
-
-        # Count how many pocket cards contributed to the triple and the pair.
-        # The .get() method retrieves the count for a given rank (using our integer rank) or returns 0 if not found.
-        pocket_used_triple = pocket_freq.get(triple_rank, 0)
-        pocket_used_pair   = pocket_freq.get(pair_rank, 0)
-        pocket_used_total  = pocket_used_triple + pocket_used_pair
-
-        # Debug prints to show the counts:
-        print(f"Triple rank {triple_rank} occurs {total_freq[triple_rank]} times overall; "
-            f"in pocket: {pocket_used_triple}")
-        print(f"Pair rank {pair_rank} occurs {total_freq[pair_rank]} times overall; "
-            f"in pocket: {pocket_used_pair}")
-
-        if pocket_used_total == 2:
-            used_cards = "Two pocket cards used"
-        elif pocket_used_total == 1:
-            used_cards = "One pocket card used"
+        if num_pairs >= 2 or has_trip:
+            type = 1
+            
         else:
-            used_cards = f"{pocket_used_total} pocket cards used"
+            type = 2
+        
+        abtype = "5" + str(type)
 
-        return {
-            "hand_type": "Full House",
-            "Triple Rank": triple_rank,
-            "Pair Rank": pair_rank,
-            "Used Pocket Cards": used_cards
-        }
     elif hand_type == "Straight":
-        return
+        
+        abtype = "4"
+    
     elif hand_type == "Flush":
-        return
+        boardsuited = max(suit_counts_board.values(), default=0)
+        if boardsuited == 3:
+            cardsused = "2"
+        if boardsuited == 4:
+            cardused = "1"
+        if boardsuited == 5:
+            cardsused = "0"
+        abtype =  "6" + cardsused
+    
     elif hand_type == "Quads":
-        return
+        abtype =  "7"
 
-    return categorized_hand
+    elif hand_type == "Straight Flush" or "Royal Flush":
+        abtype = "8"
 
 # Example usage
 poker_string = "[Round 0][Player: 0][Pot: 40000][Money: 19900 0][Private: 8c8h][Public: 3sJc5d8sJs][Sequences: cr20000]"
