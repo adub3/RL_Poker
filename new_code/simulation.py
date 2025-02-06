@@ -28,16 +28,17 @@ def test_simulate_round():
 
         else:
             # Get the legal actions for the current player without all ins cause they're boring
-            actions_excluding_all_in = get_actions_without_allin(state)
+            action_space = state.legal_actions()
             
             # Choose a random action
-            action = np.random.choice(actions_excluding_all_in)
+            action = np.random.choice(action_space)
             print(f"Player {current_player} takes action: {action}")
             state.apply_action(action)
 
         # Print the current state
         print(state)
         time.sleep(0.1)
+    print(game.stacks())
 
     # Print the final state and returns (utilities)
     print("-----Final state-----:")
