@@ -1,53 +1,36 @@
-import math
+def missing_for_straight_with_debug(rank_counts):
+    """
+    Given a dictionary `rank_counts` where keys are card ranks (numeric)
+    and values are the count of cards for that rank, this function returns
+    a tuple (min_missing, sequence) where:
+      - min_missing is the minimum number of additional cards required
+        to complete any 5-card straight (5 consecutive ranks) in a standard deck.
+      - sequence is the 5-card straight (list of consecutive ranks) for which
+        that minimum was found.
+    
+    We assume:
+      - Cards are valued from 2 up to Ace (14).
+      - A straight must be exactly 5 consecutive values.
+    """
+    min_missing = float('inf')
+    best_sequence = None
+    
+    # Check every possible straight from 2-6 up to 10-14.
+    for start in range(1, 11):  # 10 is the last starting card: 10,11,12,13,14
+        straight = list(range(start, start + 5))
+        missing = sum(1 for card in straight if rank_counts.get(card, 0) == 0)
+        
+        # Debug: print the straight and how many cards are missing.
+        print(f"Checking straight {straight} => missing {missing}")
+        
+        if missing < min_missing:
+            min_missing = missing
+            best_sequence = straight
+    
+    return min_missing, best_sequence
 
-def process_sequences(sequence, initial_pot):
-    result = ""
-    current_number = ""
-    current_pot = int(initial_pot)
-    future_bets = []
-    
-    # First pass: collect all bets
-    temp_num = ""
-    for char in sequence:
-        if char.isdigit():
-            temp_num += char
-        elif temp_num:
-            future_bets.append(int(temp_num))
-            temp_num = ""
-    if temp_num:
-        future_bets.append(int(temp_num))
-    
-    # Second pass: process sequence
-    bet_index = 0
-    for char in sequence:
-        if char == 'c':
-            result += 'c'
-        elif char == 'r':
-            if current_number:
-                number = int(current_number)
-                # Calculate remaining future bets
-                remaining_bets = sum(future_bets[bet_index + 1:])
-                # Adjust pot for current calculation
-                adjusted_pot = current_pot - remaining_bets
-                processed_number = math.floor(math.log(number/adjusted_pot + 1) * 4)
-                result += str(processed_number)
-                current_pot += number  # Update pot for next calculations
-                current_number = ""
-                bet_index += 1
-            result += 'r'
-        elif char.isdigit():
-            current_number += char
-    
-    # Process any remaining number at the end
-    if current_number:
-        number = int(current_number)
-        processed_number = math.floor(math.log(number/current_pot + 1) * 4)
-        result += str(processed_number)
-    
-    return result
-
-# Example usage
-data = {'Round': 0, 'Player': 0, 'Pot': 60000, 'Money': [19900, 0], 'Private': ['8c', '8h'], 'Public': ['3s', 'Jc', '5d', '8s', 'Js'], 'Sequences': 'cr20000r40000'}
-
-processed_sequence = process_sequences(data['Sequences'],data['Pot'])
-print(processed_sequence)
+# Example usage:
+rank_counts = {1: 1, 2: 1, 3: 1, 8: 1, 10: 1}
+min_missing, sequence = missing_for_straight_with_debug(rank_counts)
+print("\nMinimum cards needed to complete a straight:", min_missing)
+print("Sequence for that straight:", sequence)

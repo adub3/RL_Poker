@@ -44,7 +44,40 @@ def parse_poker_string(poker_string):
     
     return parsed_data
 
-def abstractbetting(sequence, initial_pot): #abstracts raises into floor(math.log(number/adjusted_pot + 1) * 4) 
+def missing_for_straight_with_debug(rank_counts):
+    """
+    Given a dictionary `rank_counts` where keys are card ranks (numeric)
+    and values are the count of cards for that rank, this function returns
+    a tuple (min_missing, sequence) where:
+      - min_missing is the minimum number of additional cards required
+        to complete any 5-card straight (5 consecutive ranks) in a standard deck.
+      - sequence is the 5-card straight (list of consecutive ranks) for which
+        that minimum was found.
+    
+    We assume:
+      - Cards are valued from 2 up to Ace (14).
+      - A straight must be exactly 5 consecutive values.
+    """
+    min_missing = float('inf')
+    best_sequence = None
+    
+    # Check every possible straight from 2-6 up to 10-14.
+    for start in range(1, 11):  # 10 is the last starting card: 10,11,12,13,14
+        straight = list(range(start, start + 5))
+        missing = sum(1 for card in straight if rank_counts.get(card, 0) == 0)
+        
+        # Debug: print the straight and how many cards are missing.
+        #print(f"Checking straight {straight} => missing {missing}")
+        
+        if missing < min_missing:
+            min_missing = missing
+            best_sequence = straight
+    
+    return min_missing
+
+def abstractbetting(datadict): #abstracts raises into floor(math.log(number/adjusted_pot + 1) * 4) 
+    sequence = datadict["Sequences"]
+    initial_pot = datadict["Pot"]
     result = ""
     current_number = ""
     current_pot = int(initial_pot)
@@ -88,13 +121,13 @@ def abstractbetting(sequence, initial_pot): #abstracts raises into floor(math.lo
         processed_number = math.floor(math.log(number/current_pot + 1) * 4)
         result += str(processed_number)
     
-    return result
+    return f"[{result}]"
 
 # Example usage
 
 
 
-def abstractioncards(data):
+def abstractioncards(data_dict):
     """
     Categorize a poker hand based on its type and rank.
 
@@ -104,30 +137,26 @@ def abstractioncards(data):
 
     Returns:
         dict: Categorized hand information. (eventually transformed into a string)
-    """
-    data_dict = parse_poker_string(data) #Transforming Raw Game State into variables
+    """ 
 
     all_cards = data_dict['Private'] + data_dict['Public'] #data_dict[priv] are user cards, else is non user
     eval7allcards = [eval7.Card(s) for s in all_cards] #making eval7 cards
     hand_type = eval7.handtype(eval7.evaluate(eval7allcards)) #eval7 can identify what type of hand it is but idk if strength of hand like Ace pair etc. Maybe some func
 
-    categorized_hand = {
-        "hand_type": hand_type,
-        "details": {}
-    }
     print(data_dict)
     community_cards = [eval7.Card(c) for c in data_dict['Public']]
 
     rank_counts = {} #Rank counts for whole board
-
+    suits_count = {}
     for card in eval7allcards:
         rank_counts[card.rank] = rank_counts.get(card.rank, 0) + 1
-
+        suits_count[card.suit] = suits_count.get(card.suit, 0) + 1
     rank_counts_board = {} #Rank counts  for just the board, also gives implied information on how paired the board is
     suit_counts_board = {}  # Suit counts for just the board
 
     for card in [eval7.Card(s) for s in data_dict["Public"]]:
         rank_counts_board[card.rank] = rank_counts.get(card.rank, 0) + 1
+        #print(rank_counts_board)
         suit_counts_board[card.suit] = suit_counts_board.get(card.suit, 0) + 1
 
     if hand_type == "High Card": #str starts w/ 1
@@ -199,7 +228,6 @@ def abstractioncards(data):
                 abtype = abtype + str(objective_value * 3 + 0)
 
     elif hand_type == "Full House":
-        rank_counts_board = {}
 
         # Count the number of ranks that appear exactly twice
         num_pairs = sum(1 for count in rank_counts_board.values() if count == 2)
@@ -216,8 +244,14 @@ def abstractioncards(data):
         abtype = "5" + str(type)
 
     elif hand_type == "Straight":
-        
-        abtype = "4"
+        missingcards = missing_for_straight_with_debug(rank_counts_board)
+        if missingcards == 2:
+            type = 1
+        if missingcards == 1:
+            type = 2
+        if missingcards == 0:
+            type = 3
+        abtype = "4" + str(type)
     
     elif hand_type == "Flush":
         boardsuited = max(suit_counts_board.values(), default=0)
@@ -234,10 +268,23 @@ def abstractioncards(data):
 
     elif hand_type == "Straight Flush" or "Royal Flush":
         abtype = "8"
+    
+    #flushdraw and straightdrawcode
+
+    flushdraw = str(5 - max(suits_count.values(), default=0))
+    straightdraw = str(5 - missing_for_straight_with_debug(rank_counts))
+
+    num_pairs = sum(1 for count in rank_counts_board.values() if count == 2)
+    boardsuited = max(suit_counts_board.values(), default=0)
+    missingcard = missing_for_straight_with_debug(rank_counts_board)
+    return f"[{abtype}{flushdraw}{straightdraw}]" + f"[{str(missingcard) +str(boardsuited)+str(num_pairs)}]"
 
 # Example usage
 poker_string = "[Round 0][Player: 0][Pot: 40000][Money: 19900 0][Private: 8c8h][Public: 3sJc5d8sJs][Sequences: cr20000]"
 
-result = abstractioncards(poker_string)
-print(result)
+datadict = parse_poker_string(poker_string) #Transforming Raw Game State into variables
+result = abstractioncards(datadict)
+result2 = abstractbetting(datadict)
+
+print(result + result2)
 # Print the parsed dictionary
