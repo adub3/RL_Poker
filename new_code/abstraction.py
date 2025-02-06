@@ -280,6 +280,7 @@ def abstractioncards(data_dict):
     return f"[{abtype}{flushdraw}{straightdraw}]" + f"[{str(missingcard) +str(boardsuited)+str(num_pairs)}]"
 
 # Example usage
+"""
 poker_string = "[Round 0][Player: 0][Pot: 40000][Money: 19900 0][Private: 8c8h][Public: 3sJc5d8sJs][Sequences: cr20000]"
 
 datadict = parse_poker_string(poker_string) #Transforming Raw Game State into variables
@@ -287,4 +288,5 @@ result = abstractioncards(datadict)
 result2 = abstractbetting(datadict)
 
 print(result + result2)
+"""
 # Print the parsed dictionary
