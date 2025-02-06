@@ -15,22 +15,6 @@ game_config = {
     "stack": "20000 20000",  # Starting stack sizes for each player
 }
 
-def get_actions_without_allin(state):
-    current_player = state.current_player()
-
-    legal_actions = state.legal_actions()
-    legal_action_strings = [state.action_to_string(current_player, action) for action in legal_actions]
-    
-    actions_excluding_all_in = []
-
-    for action_num, action_str in zip(legal_actions, legal_action_strings):
-        _, move = action_str.split()
-        _, move = move.split("=")
-        if move != "AllIn":
-            actions_excluding_all_in.append(action_num)
-    
-    return actions_excluding_all_in
-
 class NodeData:
     def __init__(self, state, value=None, policy=[]) -> None:
         # Store variables like the game state, value, policy, etc.
@@ -106,8 +90,6 @@ def playout_game_with_tree() -> treelib.Tree:
         node = new_node
         state = new_state
     
-    print(state)
-    print(state.rewards())
     return tree
 
 def adjust_policy_tree_traversal_example(tree: treelib.Tree, reward: list[int, int], strategy=None) -> None:
@@ -173,8 +155,13 @@ def MCCFR(state, player: int, strategy, regrets):
 
         value = 0
         action_space = state.legal_actions()
-        policy_list = calculate_strategy("infostate-xyz", strategy, regrets)["infostate-xyz"]
+        policy_list = calculate_strategy("state-xyz", strategy, regrets)["infostate-xyz"]
         # MATCH POLICY AND ACTIONS TOGETHER, AND SOFTMAX
+
+        # Actions are numbered 0 to n - 1 in the actino_space, 
+        # thus the corresponding policy is policy_list[action]
+        # Truncate; this new list is normalized
+        policy_list = [policy_list[i] for i in action_space]
 
         action_value_list = []
         for action, policy in zip(action_space, policy_list):
@@ -187,15 +174,16 @@ def MCCFR(state, player: int, strategy, regrets):
             value = value + action_value * policy
         
         # Update regrets
-        for action in action_space:
-            regrets["infostate-xyz"][action] = regrets["infostate-xyz"][action] + action_value_list[action] - value
+        for i, action_index in enumerate(action_space): # This is confusing but it works
+            regrets["infostate-xyz"][action_index] = regrets["infostate-xyz"][action_index] + action_value_list[i] - value
         
         return value
     else: # I believe this case occurs when it's the other player's turn
         new_state = state.clone()
 
-        policy = calculate_strategy(None, strategy, regrets)["infostate-xyz"]
         action_space = state.legal_actions()
+        policy = calculate_strategy("state-xyz", strategy, regrets)["infostate-xyz"]
+        policy_list = [policy_list[i] for i in action_space]
 
         action = np.random.choice(action_space, p=policy)
         new_state.apply_action(action)
@@ -227,6 +215,12 @@ def calculate_strategy(state, strategy, regrets):
             policy[i] = 1 / action_size
     
     return strategy
+
+def save_strategy(strategy):
+    pass
+
+def load_strategy():
+    pass
 
 if __name__ == "__main__":
     ex_tree = playout_game_with_tree()
