@@ -158,7 +158,7 @@ def MCCFR(state, player: int, strategy, regrets):
         policy_list = calculate_strategy("state-xyz", strategy, regrets)["infostate-xyz"]
         # MATCH POLICY AND ACTIONS TOGETHER, AND SOFTMAX
 
-        # Actions are numbered 0 to n - 1 in the actino_space, 
+        # Actions are numbered 0 to n - 1 in the action_space, 
         # thus the corresponding policy is policy_list[action]
         # Truncate; this new list is normalized
         policy_list = [policy_list[i] for i in action_space]
