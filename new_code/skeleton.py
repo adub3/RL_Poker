@@ -53,10 +53,10 @@ class Player(Bot):
         #my_bankroll = game_state.bankroll  # the total number of chips you've gained or lost from the beginning of the game to the start of this round
         #game_clock = game_state.game_clock  # the total number of seconds your bot has left to play this game
         self.chips = game_state.bankroll
-        round_num = game_state.round_num  # the round number from 1 to NUM_ROUNDS
+        
         self.cards["Private"] = round_state.hands[active]  # your cards
-        card_string = abstractioncards(self.cards)
-        big_blind = bool(active)  # True if you are the big blind
+        self.card_string = abstractioncards(self.cards)
+        self.big_blind = bool(active)  # True if you are the big blind
         temp = abstractbettinge()
         self.log = ""
         

@@ -107,8 +107,8 @@ def abstractbettinge(log, round_state, active): #abstracts raises into floor(mat
                 remaining_bets = sum(future_bets[bet_index + 1:])
                 # Adjust pot for current calculation
                 adjusted_pot = current_pot - remaining_bets
-                processed_number = math.floor(math.log(number/adjusted_pot + 1) * 4)
-                result += str(processed_number)
+                # processed_number = math.floor(math.log(number/adjusted_pot + 1) * 4)
+                # result += str(processed_number)
                 current_pot += number  # Update pot for next calculations
                 current_number = ""
                 bet_index += 1
@@ -116,11 +116,11 @@ def abstractbettinge(log, round_state, active): #abstracts raises into floor(mat
         elif char.isdigit():
             current_number += char
     
-    # Process any remaining number at the end
-    if current_number:
-        number = int(current_number)
-        processed_number = math.floor(math.log(number/current_pot + 1) * 4)
-        result += str(processed_number)
+    # # Process any remaining number at the end
+    # if current_number:
+    #     number = int(current_number)
+    #     processed_number = math.floor(math.log(number/current_pot + 1) * 4)
+    #     result += str(processed_number)
     
     return f"[{result}]"
 
@@ -156,8 +156,8 @@ def abstractbetting(datadict): #abstracts raises into floor(math.log(number/adju
                 remaining_bets = sum(future_bets[bet_index + 1:])
                 # Adjust pot for current calculation
                 adjusted_pot = current_pot - remaining_bets
-                processed_number = math.floor(math.log(number/adjusted_pot + 1) * 4)
-                result += str(processed_number)
+                # processed_number = math.floor(math.log(number/adjusted_pot + 1) * 4)
+                # result += str(processed_number)
                 current_pot += number  # Update pot for next calculations
                 current_number = ""
                 bet_index += 1
@@ -166,12 +166,12 @@ def abstractbetting(datadict): #abstracts raises into floor(math.log(number/adju
             current_number += char
     
     # Process any remaining number at the end
-    if current_number:
-        number = int(current_number)
-        processed_number = math.floor(math.log(number/current_pot + 1) * 4)
-        result += str(processed_number)
+    # if current_number:
+    #     number = int(current_number)
+    #     processed_number = math.floor(math.log(number/current_pot + 1) * 4)
+    #     result += str(processed_number)
     
-    return f"[{result}]"
+    return f"[{result[0:3]}]"
 
 
 def abstractioncards(data_dict):
@@ -190,7 +190,7 @@ def abstractioncards(data_dict):
     eval7allcards = [eval7.Card(s) for s in all_cards] #making eval7 cards
     hand_type = eval7.handtype(eval7.evaluate(eval7allcards)) #eval7 can identify what type of hand it is but idk if strength of hand like Ace pair etc. Maybe some func
 
-    print(data_dict)
+    # print(data_dict)
     community_cards = [eval7.Card(c) for c in data_dict['Public']]
 
     rank_counts = {} #Rank counts for whole board
@@ -231,14 +231,15 @@ def abstractioncards(data_dict):
             elif highest_pair <= 11:
                 objective_value = 2
             else:
-                objective_value = "Overpair"
+                objective_value = 'Overpair'
+                objective_value = objective_value.strip()
         else:
             if board_pairs:
                 typetrips = "Set"
             else:
                 typetrips = "Trips"
         # Get board ranks
-        board_ranks = sorted(set(card.rank for card in community_cards), reverse=True)
+        board_ranks = sorted([card.rank for card in community_cards], reverse=True)
         # Relative Value func
         if highest_pair in board_ranks:
                 # Pair is on the board
@@ -253,26 +254,27 @@ def abstractioncards(data_dict):
             else:
                 relative_value = "Top Pair"
         else:
-            relative_value = "Overpair"
+            relative_value = 'Overpair'
         if hand_type == "Pair":
             abtype = "2"
         if hand_type == "Two Pair":
             abtype = "3"
-        if hand_type == "Pair" or "Two Pair":
-            if relative_value == "Low":
-                abtype = abtype + str(1+objective_value*3)
-            if relative_value == "Middle":
-                abtype = abtype + str(2+objective_value*3)
-            if relative_value == "Top Pair":
-                abtype = abtype + str(3+objective_value*3)
-            if relative_value == "Overpair" and objective_value == "Overpair":
+        if hand_type in ['Pair', 'Two Pair']:
+            # if ((objective_value == 'Overpair') or (relative_value == 'Overpair')):
+            if objective_value == 'Overpair':
                 abtype = abtype + "0"
+            if relative_value == "Low":
+                abtype = abtype + '1'
+            if relative_value == "Middle":
+                abtype = abtype + '2'
+            if relative_value == "Top Pair":
+                abtype = abtype + '3'
         if hand_type == 'Trips':
             abtype = "4"
             if relative_value == "Set":
-                abtype = abtype + str(objective_value * 3 + 1)
+                abtype = abtype + "1"
             else:
-                abtype = abtype + str(objective_value * 3 + 0)
+                abtype = abtype + "0"
 
     elif hand_type == "Full House":
 
@@ -298,14 +300,16 @@ def abstractioncards(data_dict):
             type = 2
         if missingcards == 0:
             type = 3
+        else:
+            type = 0
         abtype = "4" + str(type)
     
     elif hand_type == "Flush":
         boardsuited = max(suit_counts_board.values(), default=0)
         if boardsuited == 3:
-            cardsused = "2"
+            cardsused = '2'
         if boardsuited == 4:
-            cardused = "1"
+            cardsused = '1'
         if boardsuited == 5:
             cardsused = "0"
         abtype =  "6" + cardsused
@@ -318,13 +322,13 @@ def abstractioncards(data_dict):
     
     #flushdraw and straightdrawcode
 
-    flushdraw = str(5 - max(suits_count.values(), default=0))
+    flushdraw = str(max((5 - max(suits_count.values())), 0))
     straightdraw = str(5 - missing_for_straight_with_debug(rank_counts))
 
     num_pairs = sum(1 for count in rank_counts_board.values() if count == 2)
     boardsuited = max(suit_counts_board.values(), default=0)
     missingcard = missing_for_straight_with_debug(rank_counts_board)
-    return f"[{abtype}{flushdraw}{straightdraw}]" + f"[{str(missingcard) +str(boardsuited)+str(num_pairs)}]"
+    return f"[{abtype[0:2]}{flushdraw}{straightdraw}]" + f"[{str(missingcard) +str(boardsuited)+str(num_pairs)}]"
 
 def generate_empty_strategy_and_regret():
     strategy = {}
@@ -332,17 +336,19 @@ def generate_empty_strategy_and_regret():
     # Betting log:
     permutations = []
     # Generate all permutations for lengths from 1 to max_length
-    for length in range(1, 5 + 1):
+    for length in range(1, 3 + 1):
         # Use product to generate strings of 'c' and 'f' of the given length
         permutations.extend("".join(p) for p in itertools.product("cr", repeat=length))
 
-    num1 = list(range(0, 60 + 1))
+    permutations += [""]
+
+    num1 = list(range(0, 70 + 1))
     num2 = list(range(0, 4 + 1))
-    num3 = list(range(0, 4 + 1))
+    num3 = list(range(0, 5 + 1))
 
     num4 = list(range(0, 14 + 1))
-    num5 = [0, 1]
-    num6 = [0, 1, 2]
+    num5 = [0, 1, 2, 3, 4, 5]
+    num6 = [0, 1, 2, 3, 4, 5]
 
     for n1,  n2, n3, n4, n5, n6, log in itertools.product(num1, num2, num3, num4, num5, num6, permutations):
         string = f"[{n1}{n2}{n3}][{n4}{n5}{n6}][{log}]"

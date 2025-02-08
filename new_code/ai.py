@@ -100,7 +100,7 @@ def MCCFR(state, player: int, strategy, regrets):
         action_space = state.legal_actions()
         policy = calculate_strategy(state, strategy, regrets)[res]
         policy_list = [policy[i] for i in action_space]
-        print(policy)
+        print(res, policy)
         policy_list = [p / sum(policy_list) for p in policy_list]
 
         action = np.random.choice(action_space, p=policy_list)
@@ -160,15 +160,16 @@ def selfplay():
 
     game = pyspiel.load_game("universal_poker", game_config)
 
-    for i in range(10000):
+    for i in range(100000):
         state = game.new_initial_state()
         MCCFR(state, 0, strategy, regrets)
 
         state = game.new_initial_state()
         MCCFR(state, 1, strategy, regrets)
 
-        if i % 1000 == 0:
+        if i % 10000 == 0:
             save_strategy(strategy)
     return strategy
 
-selfplay()
+if __name__ == "__main__":
+    selfplay()

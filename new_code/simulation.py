@@ -13,6 +13,8 @@ def test_simulate_round():
     print("Initial state:")
     print(state)
 
+    strategy = load_strategy()
+
     # Simulate the game until it's over
     while not state.is_terminal():
         # Get the current player
@@ -29,9 +31,22 @@ def test_simulate_round():
         else:
             # Get the legal actions for the current player without all ins cause they're boring
             action_space = state.legal_actions()
+            print(action_space)
+
+            if current_player == 0:
+                action = input("a")
             
-            # Choose a random action
-            action = input("a")
+            else:
+                # Choose a random action
+                temp = parse_poker_string(state.information_state_string())
+                cards = abstractioncards(temp)
+                context = abstractbetting(temp)
+                res = cards + context
+                policy = strategy[res]
+                policy_list = [policy[i] for i in action_space]
+                print(res, policy)
+                policy_list = [p / sum(policy_list) for p in policy_list]
+
             # action = np.random.choice(action_space)
             print(f"Player {current_player} takes action: {action}")
             state.apply_action(action)
