@@ -332,7 +332,7 @@ def generate_empty_strategy_and_regret():
     # Betting log:
     permutations = []
     # Generate all permutations for lengths from 1 to max_length
-    for length in range(1, 7 + 1):
+    for length in range(1, 5 + 1):
         # Use product to generate strings of 'c' and 'f' of the given length
         permutations.extend("".join(p) for p in itertools.product("cr", repeat=length))
 

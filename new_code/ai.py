@@ -73,7 +73,7 @@ def MCCFR(state, player: int, strategy, regrets):
         # Actions are numbered 0 to n - 1 in the action_space, 
         # thus the corresponding policy is policy_list[action]
         # Truncate; this new list is normalized
-        policy_list = [policy_list[i] for i in action_space]
+        policy_list = [policy_list[i]/sum(policy_list) for i in action_space]
 
         action_value_list = []
         for action, policy in zip(action_space, policy_list):
@@ -99,7 +99,7 @@ def MCCFR(state, player: int, strategy, regrets):
 
         action_space = state.legal_actions()
         policy = calculate_strategy(state, strategy, regrets)[res]
-        policy_list = [policy_list[i] for i in action_space]
+        policy_list = [policy_list[i]/sum(policy_list) for i in action_space]
 
         action = np.random.choice(action_space, p=policy)
         new_state.apply_action(action)
@@ -132,9 +132,9 @@ def calculate_strategy(state, strategy, regrets):
     # MATCH REGRETS TO POLICY
     for i, regret in enumerate(node_regrets):
         if sum > 0:
-            policy[i] = max(0, regret) / sum
+            policy[i] = round(max(0, regret) / sum, 2)
         else:
-            policy[i] = 1 / action_size
+            policy[i] = round(1 / action_size, 2)
     
     return strategy
 
