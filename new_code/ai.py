@@ -1,8 +1,9 @@
 import numpy as np
 import pyspiel
 import treelib
-from abstraction import abstractbetting, abstractioncards, parse_poker_string
+from abstraction import abstractbetting, abstractioncards, parse_poker_string, generate_empty_strategy_and_regret
 import ujson
+import os
 
 game_config = {
     "betting": "nolimit", # Betting style: "limit" or "nolimit"
@@ -140,8 +141,34 @@ def calculate_strategy(state, strategy, regrets):
 def save_strategy(strategy):
     json_data = ujson.dumps(strategy)
 
-    with open(f"/blackjack.txt", 'w') as out_file:
+    path = os.path.dirname(os.path.realpath(__file__))
+
+    with open(f"{path}/blackjack.txt", 'w') as out_file:
         out_file.write(json_data)
 
 def load_strategy():
-    set = ujson.load(open(f"/blackjack.txt", 'r'))
+    path = os.path.dirname(os.path.realpath(__file__))
+    set = ujson.load(open(f"{path}/blackjack.txt", 'r'))
+    return set
+
+def selfplay():
+    # strategy, regrets = generate_empty_strategy_and_regret()
+    # save_strategy(strategy)
+
+    _, regrets = generate_empty_strategy_and_regret()
+    strategy = load_strategy()
+
+    game = pyspiel.load_game("universal_poker", game_config)
+
+    for i in range(5):
+        state = game.new_initial_state()
+        MCCFR(state, 0, strategy, regrets)
+
+        state = game.new_initial_state()
+        MCCFR(state, 1, strategy, regrets)
+
+        if i % 3 == 0:
+            save_strategy(strategy)
+    return strategy
+
+selfplay()

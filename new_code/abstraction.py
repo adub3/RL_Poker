@@ -352,29 +352,30 @@ def generate_empty_strategy_and_regret():
     
     return strategy, regret
 
-s, r = generate_empty_strategy_and_regret()
+if __name__ == "__main__":
+    s, r = generate_empty_strategy_and_regret()
 
 
 
 
-# Example usage
+    # Example usage
 
-poker_string = "[Round 0][Player: 0][Pot: 40000][Money: 19900 0][Private: 8c8h][Public: 3sJc5d8sJs][Sequences: cr20000]"
+    poker_string = "[Round 0][Player: 0][Pot: 40000][Money: 19900 0][Private: 8c8h][Public: 3sJc5d8sJs][Sequences: cr20000]"
 
-datadict = parse_poker_string(poker_string) #Transforming Raw Game State into variables
-result = abstractioncards(datadict)
-result2 = abstractbetting(datadict)
+    datadict = parse_poker_string(poker_string) #Transforming Raw Game State into variables
+    result = abstractioncards(datadict)
+    result2 = abstractbetting(datadict)
 
-print(result + result2)
+    print(result + result2)
 
-# Example usage
-"""
-poker_string = "[Round 0][Player: 0][Pot: 40000][Money: 19900 0][Private: 8c8h][Public: 3sJc5d8sJs][Sequences: cr20000]"
+    # Example usage
+    """
+    poker_string = "[Round 0][Player: 0][Pot: 40000][Money: 19900 0][Private: 8c8h][Public: 3sJc5d8sJs][Sequences: cr20000]"
 
-datadict = parse_poker_string(poker_string) #Transforming Raw Game State into variables
-result = abstractioncards(datadict)
-result2 = abstractbetting(datadict)
+    datadict = parse_poker_string(poker_string) #Transforming Raw Game State into variables
+    result = abstractioncards(datadict)
+    result2 = abstractbetting(datadict)
 
-print(result + result2)
-"""
-# Print the parsed dictionary
+    print(result + result2)
+    """
+    # Print the parsed dictionary
