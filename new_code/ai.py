@@ -1,6 +1,7 @@
 import numpy as np
 import pyspiel
 import treelib
+from abstraction import abstractbetting, abstractioncards
 
 game_config = {
     "betting": "nolimit", # Betting style: "limit" or "nolimit"
@@ -59,6 +60,7 @@ def MCCFR(state, player: int, strategy, regrets):
 
         value = 0
         action_space = state.legal_actions()
+        context = abstractbetting(, ,player)
         policy_list = calculate_strategy("state-xyz", strategy, regrets)["infostate-xyz"]
         # MATCH POLICY AND ACTIONS TOGETHER, AND SOFTMAX
 
@@ -121,7 +123,13 @@ def calculate_strategy(state, strategy, regrets):
     return strategy
 
 def save_strategy(strategy):
-    pass
+    json_data = ujson.dumps(strategy)
+
+    # Increment set counter
+    next_set = highest_data_number() + 1
+
+    with open(f"/blackjack.txt", 'w') as out_file:
+        out_file.write(json_data)
 
 def load_strategy():
-    pass
+    set = ujson.load(open(f"/blackjack.txt", 'r'))
