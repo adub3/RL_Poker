@@ -1,6 +1,7 @@
 import re
 import eval7
 import math
+import itertools
 
 #Notes:
 # trips and top pair same some similar code that could be combined maybe better to write a func that just sees the highest card on the board and matches it to the card in hand or smtn
@@ -324,6 +325,47 @@ def abstractioncards(data_dict):
     boardsuited = max(suit_counts_board.values(), default=0)
     missingcard = missing_for_straight_with_debug(rank_counts_board)
     return f"[{abtype}{flushdraw}{straightdraw}]" + f"[{str(missingcard) +str(boardsuited)+str(num_pairs)}]"
+
+def generate_empty_strategy_and_regret():
+    strategy = {}
+    regret = {}
+    # Betting log:
+    permutations = []
+    # Generate all permutations for lengths from 1 to max_length
+    for length in range(1, 7 + 1):
+        # Use product to generate strings of 'c' and 'f' of the given length
+        permutations.extend("".join(p) for p in itertools.product("cr", repeat=length))
+
+    num1 = list(range(0, 60 + 1))
+    num2 = list(range(0, 4 + 1))
+    num3 = list(range(0, 4 + 1))
+
+    num4 = list(range(0, 14 + 1))
+    num5 = [0, 1]
+    num6 = [0, 1, 2]
+
+    for n1,  n2, n3, n4, n5, n6, log in itertools.product(num1, num2, num3, num4, num5, num6, permutations):
+        string = f"[{n1}{n2}{n3}][{n4}{n5}{n6}][{log}]"
+
+        strategy[string] = [1/4 for _ in range(4)]
+        regret[string] = [0 for _ in range(4)]
+    
+    return strategy, regret
+
+s, r = generate_empty_strategy_and_regret()
+
+
+
+
+# Example usage
+
+poker_string = "[Round 0][Player: 0][Pot: 40000][Money: 19900 0][Private: 8c8h][Public: 3sJc5d8sJs][Sequences: cr20000]"
+
+datadict = parse_poker_string(poker_string) #Transforming Raw Game State into variables
+result = abstractioncards(datadict)
+result2 = abstractbetting(datadict)
+
+print(result + result2)
 
 # Example usage
 """
