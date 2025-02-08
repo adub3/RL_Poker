@@ -10,7 +10,7 @@ from skeleton.runner import parse_args, run_bot
 import random
 import abstractbetting
 from ai import load_strategy, MCCFR
-from abstraction import abstractbetting, abstractioncards
+from abstraction import abstractbettinge, abstractioncards
 
 class Player(Bot):
     '''
@@ -114,31 +114,28 @@ class Player(Bot):
             self.log += 'c'
 
         # call abstraction to find scenario
-        context = abstractbetting(self.log, round_state, active) #change abstractbetting to just extract all the information itself low key
+        context = abstractbettinge(self.log, round_state, active) #change abstractbetting to just extract all the information itself low key
         self.cards["Public"] = board_cards
         self.state = abstractioncards(self.cards) + ' ' + context # create state string for lookup table
 
         #fold, call, bet, all in
         ind = random.choices(len(self.strategy[context]), self.strategy[context], 1) # strategy holds the weight. chooses on strategy.
-        
+        print(ind)
+
         min_raise, max_raise = round_state.raise_bounds() # the smallest and largest numbers of chips for a legal bet/raise
         
         
-        if (ind == 0 and FoldAction in legal_actions):
+        if (ind[0] == 0 and FoldAction in legal_actions):
             return FoldAction
-        if (ind == 1 and CheckAction in legal_actions):
+        if (ind[0] == 1 and CheckAction in legal_actions):
             self.log += 'c'
             return CheckAction
-        if (ind >= 2 and RaiseAction in legal_actions):
+        if (ind[0] >= 2 and RaiseAction in legal_actions):
             self.log += 'r'
-            if(ind == 2):
+            if(ind[0] == 2):
                 return RaiseAction(min_raise)
             else:
-                prop_amount = min_raise * ((ind - 2) * 2)
-                if(prop_amount > max_raise):
-                    return RaiseAction(max_raise)
-                else:
-                    return RaiseAction(prop_amount)
+                return RaiseAction(max_raise)
         self.log += 'c'
         return CallAction()
 

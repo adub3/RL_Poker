@@ -75,7 +75,7 @@ def missing_for_straight_with_debug(rank_counts):
     
     return min_missing
 
-def abstractbetting(log, round_state, active): #abstracts raises into floor(math.log(number/adjusted_pot + 1) * 4) 
+def abstractbettinge(log, round_state, active): #abstracts raises into floor(math.log(number/adjusted_pot + 1) * 4) 
     sequence = log   #message log of game actions
     initial_pot = round_state.pips[active]
     result = ""
@@ -124,7 +124,53 @@ def abstractbetting(log, round_state, active): #abstracts raises into floor(math
     return f"[{result}]"
 
 # Example usage
-
+def abstractbetting(datadict): #abstracts raises into floor(math.log(number/adjusted_pot + 1) * 4) 
+    sequence = datadict["Sequences"]   #message log of game actions
+    initial_pot = datadict["Pot"]
+    result = ""
+    current_number = ""
+    current_pot = int(initial_pot)
+    future_bets = []
+    
+    # First pass: collect all bets
+    temp_num = ""
+    for char in sequence:
+        if char.isdigit():
+            temp_num += char
+        elif temp_num:
+            future_bets.append(int(temp_num))
+            temp_num = ""
+    if temp_num:
+        future_bets.append(int(temp_num))
+    
+    # Second pass: process sequence
+    bet_index = 0
+    for char in sequence:
+        if char == 'c':
+            result += 'c'
+        elif char == 'r':
+            if current_number:
+                number = int(current_number)
+                # Calculate remaining future bets
+                remaining_bets = sum(future_bets[bet_index + 1:])
+                # Adjust pot for current calculation
+                adjusted_pot = current_pot - remaining_bets
+                processed_number = math.floor(math.log(number/adjusted_pot + 1) * 4)
+                result += str(processed_number)
+                current_pot += number  # Update pot for next calculations
+                current_number = ""
+                bet_index += 1
+            result += 'r'
+        elif char.isdigit():
+            current_number += char
+    
+    # Process any remaining number at the end
+    if current_number:
+        number = int(current_number)
+        processed_number = math.floor(math.log(number/current_pot + 1) * 4)
+        result += str(processed_number)
+    
+    return f"[{result}]"
 
 
 def abstractioncards(data_dict):

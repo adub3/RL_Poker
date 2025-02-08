@@ -1,7 +1,7 @@
 import numpy as np
 import pyspiel
 import treelib
-from abstraction import abstractbetting, abstractioncards
+from abstraction import abstractbetting, abstractioncards, parse_poker_string
 
 game_config = {
     "betting": "nolimit", # Betting style: "limit" or "nolimit"
@@ -37,7 +37,7 @@ def MCCFR(state, player: int, strategy, regrets):
         state: The current state of the game.
         player (int): The identifier of the player for whom CFR is computed.
     """
-    
+
     if state.is_terminal():
         return state.rewards()[player] # Get the reward for the player
     
@@ -46,6 +46,11 @@ def MCCFR(state, player: int, strategy, regrets):
 
     elif state.is_chance_node():
         new_state = state.clone() # Make a copy
+        temp = parse_poker_string(state.information_state_string)
+        context = abstractbetting(temp)
+
+        card = {"Private": [state.hand[player]], "Public": []}
+
 
         outcomes_with_probs = new_state.chance_outcomes()
         action_list, prob_list = zip(*outcomes_with_probs)
@@ -60,7 +65,6 @@ def MCCFR(state, player: int, strategy, regrets):
 
         value = 0
         action_space = state.legal_actions()
-        context = abstractbetting(, ,player)
         policy_list = calculate_strategy("state-xyz", strategy, regrets)["infostate-xyz"]
         # MATCH POLICY AND ACTIONS TOGETHER, AND SOFTMAX
 
