@@ -57,6 +57,7 @@ class Player(Bot):
         self.cards["Private"] = round_state.hands[active]  # your cards
         card_string = abstractioncards(self.cards)
         big_blind = bool(active)  # True if you are the big blind
+        temp = abstractbettinge()
         self.log = ""
         
         pass
@@ -119,7 +120,10 @@ class Player(Bot):
         self.state = abstractioncards(self.cards) + ' ' + context # create state string for lookup table
 
         #fold, call, bet, all in
-        ind = random.choices(len(self.strategy[context]), self.strategy[context], 1) # strategy holds the weight. chooses on strategy.
+        if self.state in self.strategy:
+            ind = random.choices(len(self.strategy[context]), self.strategy[context], 1) # strategy holds the weight. chooses on strategy.
+        else:
+            ind = random.choices(4, [0.25, 0.25, 0.25, 0.25], 1) #pick at random if no data
         print(ind)
 
         min_raise, max_raise = round_state.raise_bounds() # the smallest and largest numbers of chips for a legal bet/raise

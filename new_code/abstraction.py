@@ -207,7 +207,7 @@ def abstractioncards(data_dict):
         suit_counts_board[card.suit] = suit_counts_board.get(card.suit, 0) + 1
 
     if hand_type == "High Card": #str starts w/ 1
-        highest_card = max(all_cards, key=lambda card: card.rank)
+        highest_card = max(eval7allcards, key=lambda card: card.rank)
         if highest_card == 14:
             abtype = "11"
         if highest_card == 13:
