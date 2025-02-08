@@ -75,12 +75,12 @@ def missing_for_straight_with_debug(rank_counts):
     
     return min_missing
 
-def abstractbetting(datadict): #abstracts raises into floor(math.log(number/adjusted_pot + 1) * 4) 
-    sequence = datadict["Sequences"]
-    initial_pot = datadict["Pot"]
+def abstractbetting(log, round_state, active): #abstracts raises into floor(math.log(number/adjusted_pot + 1) * 4) 
+    sequence = log   #message log of game actions
+    initial_pot = round_state.pips[active]
     result = ""
     current_number = ""
-    current_pot = int(initial_pot)
+    current_pot = initial_pot
     future_bets = []
     
     # First pass: collect all bets
