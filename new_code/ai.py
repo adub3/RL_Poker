@@ -2,6 +2,7 @@ import numpy as np
 import pyspiel
 import treelib
 from abstraction import abstractbetting, abstractioncards, parse_poker_string
+import ujson
 
 game_config = {
     "betting": "nolimit", # Betting style: "limit" or "nolimit"
@@ -138,9 +139,6 @@ def calculate_strategy(state, strategy, regrets):
 
 def save_strategy(strategy):
     json_data = ujson.dumps(strategy)
-
-    # Increment set counter
-    next_set = highest_data_number() + 1
 
     with open(f"/blackjack.txt", 'w') as out_file:
         out_file.write(json_data)
