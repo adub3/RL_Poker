@@ -13,17 +13,3 @@ game_config = {
     "numBoardCards": "0 3 1 1",  # Number of board cards per round
     "stack": "20000 20000",  # Starting stack sizes for each player
 }
-
-min_bet = 1
-max_bet = 50
-betting_amounts = []
-x = 2
-while True:
-    y = math.floor(x * math.log(x))
-    if y < max_bet:
-        betting_amounts.append(y)
-        x += 1
-    else:
-        break
-
-print(betting_amounts)
