@@ -46,11 +46,6 @@ def MCCFR(state, player: int, strategy, regrets):
 
     elif state.is_chance_node():
         new_state = state.clone() # Make a copy
-        temp = parse_poker_string(state.information_state_string)
-        context = abstractbetting(temp)
-
-        card = {"Private": [state.hand[player]], "Public": []}
-
 
         outcomes_with_probs = new_state.chance_outcomes()
         action_list, prob_list = zip(*outcomes_with_probs)
@@ -63,9 +58,14 @@ def MCCFR(state, player: int, strategy, regrets):
     elif state.current_player() == player:
         strategy = None
 
+        temp = parse_poker_string(state.information_state_string)
+        cards = abstractioncards(temp)
+        context = abstractbetting(temp)
+        res = cards + ' ' + context
+
         value = 0
         action_space = state.legal_actions()
-        policy_list = calculate_strategy("state-xyz", strategy, regrets)["infostate-xyz"]
+        policy_list = calculate_strategy(state, strategy, regrets)[res]
         # MATCH POLICY AND ACTIONS TOGETHER, AND SOFTMAX
 
         # Actions are numbered 0 to n - 1 in the action_space, 
@@ -85,14 +85,18 @@ def MCCFR(state, player: int, strategy, regrets):
         
         # Update regrets
         for i, action_index in enumerate(action_space): # This is confusing but it works
-            regrets["infostate-xyz"][action_index] = regrets["infostate-xyz"][action_index] + action_value_list[i] - value
+            regrets[res][action_index] = regrets[res][action_index] + action_value_list[i] - value
         
         return value
     else: # I believe this case occurs when it's the other player's turn
+        temp = parse_poker_string(state.information_state_string)
+        cards = abstractioncards(temp)
+        context = abstractbetting(temp)
+        res = cards + ' ' + context
         new_state = state.clone()
 
         action_space = state.legal_actions()
-        policy = calculate_strategy("state-xyz", strategy, regrets)["infostate-xyz"]
+        policy = calculate_strategy(state, strategy, regrets)[res]
         policy_list = [policy_list[i] for i in action_space]
 
         action = np.random.choice(action_space, p=policy)
@@ -108,6 +112,12 @@ def calculate_strategy(state, strategy, regrets):
     sum = 0
 
     infostate = None
+
+    temp = parse_poker_string(state.information_state_string)
+    cards = abstractioncards(temp)
+    context = abstractbetting(temp)
+    infostate = cards + ' ' + context
+    
 
     policy = strategy[infostate]
     node_regrets = regrets[infostate]
