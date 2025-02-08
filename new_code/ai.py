@@ -60,7 +60,7 @@ def MCCFR(state, player: int, strategy, regrets):
     elif state.current_player() == player:
         strategy = None
 
-        temp = parse_poker_string(state.information_state_string)
+        temp = parse_poker_string(state.information_state_string())
         cards = abstractioncards(temp)
         context = abstractbetting(temp)
         res = cards + ' ' + context
@@ -91,7 +91,7 @@ def MCCFR(state, player: int, strategy, regrets):
         
         return value
     else: # I believe this case occurs when it's the other player's turn
-        temp = parse_poker_string(state.information_state_string)
+        temp = parse_poker_string(state.information_state_string())
         cards = abstractioncards(temp)
         context = abstractbetting(temp)
         res = cards + ' ' + context
@@ -115,7 +115,7 @@ def calculate_strategy(state, strategy, regrets):
 
     infostate = None
 
-    temp = parse_poker_string(state.information_state_string)
+    temp = parse_poker_string(state.information_state_string())
     cards = abstractioncards(temp)
     context = abstractbetting(temp)
     infostate = cards + ' ' + context
