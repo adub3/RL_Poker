@@ -31,7 +31,8 @@ def test_simulate_round():
             action_space = state.legal_actions()
             
             # Choose a random action
-            action = np.random.choice(action_space)
+            action = input("a")
+            # action = np.random.choice(action_space)
             print(f"Player {current_player} takes action: {action}")
             state.apply_action(action)
 
