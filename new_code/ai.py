@@ -58,10 +58,7 @@ def MCCFR(state, player: int, strategy, regrets):
         return MCCFR(new_state, player, strategy, regrets)
     
     elif state.current_player() == player:
-        temp = parse_poker_string(state.information_state_string())
-        cards = abstractioncards(temp)
-        context = abstractbetting(temp)
-        res = cards + context
+        res = get_infostate(state)
 
         value = 0
         action_space = state.legal_actions()
@@ -91,10 +88,7 @@ def MCCFR(state, player: int, strategy, regrets):
         
         return value
     else: # I believe this case occurs when it's the other player's turn
-        temp = parse_poker_string(state.information_state_string())
-        cards = abstractioncards(temp)
-        context = abstractbetting(temp)
-        res = cards + context
+        res = get_infostate(state)
         new_state = state.clone()
 
         action_space = state.legal_actions()
@@ -115,10 +109,7 @@ def calculate_strategy(state, strategy, regrets):
     """
     sum = 0
 
-    temp = parse_poker_string(state.information_state_string())
-    cards = abstractioncards(temp)
-    context = abstractbetting(temp)
-    infostate = cards + context
+    infostate = get_infostate(state)
     
 
     policy = strategy[infostate]
@@ -138,6 +129,13 @@ def calculate_strategy(state, strategy, regrets):
     
     return strategy
 
+def get_infostate(state):
+    temp = parse_poker_string(state.information_state_string())
+    cards = abstractioncards(temp)
+    context = abstractbetting(temp)
+    infostate = cards + context
+    return infostate
+
 def save_strategy(strategy):
     json_data = ujson.dumps(strategy)
 
@@ -152,11 +150,11 @@ def load_strategy():
     return set
 
 def selfplay():
-    # strategy, regrets = generate_empty_strategy_and_regret()
-    # save_strategy(strategy)
+    strategy, regrets = generate_empty_strategy_and_regret()
+    save_strategy(strategy)
 
-    _, regrets = generate_empty_strategy_and_regret()
-    strategy = load_strategy()
+    # _, regrets = generate_empty_strategy_and_regret()
+    # strategy = load_strategy()
 
     game = pyspiel.load_game("universal_poker", game_config)
 

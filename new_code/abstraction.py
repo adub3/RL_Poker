@@ -328,7 +328,7 @@ def abstractioncards(data_dict):
     num_pairs = sum(1 for count in rank_counts_board.values() if count == 2)
     boardsuited = max(suit_counts_board.values(), default=0)
     missingcard = missing_for_straight_with_debug(rank_counts_board)
-    return f"[{abtype[0:2]}{flushdraw}{straightdraw}]" + f"[{str(missingcard) +str(boardsuited)+str(num_pairs)}]"
+    return f"[{abtype[0:2]}{flushdraw}{straightdraw}]" + f"[{str(missingcard) +str(boardsuited)}]"
 
 def generate_empty_strategy_and_regret():
     strategy = {}
@@ -348,10 +348,10 @@ def generate_empty_strategy_and_regret():
 
     num4 = list(range(0, 14 + 1))
     num5 = [0, 1, 2, 3, 4, 5]
-    num6 = [0, 1, 2, 3, 4, 5]
+    # num6 = [0, 1, 2, 3, 4, 5]
 
-    for n1,  n2, n3, n4, n5, n6, log in itertools.product(num1, num2, num3, num4, num5, num6, permutations):
-        string = f"[{n1}{n2}{n3}][{n4}{n5}{n6}][{log}]"
+    for n1,  n2, n3, n4, n5, log in itertools.product(num1, num2, num3, num4, num5, permutations):
+        string = f"[{n1}{n2}{n3}][{n4}{n5}][{log}]"
 
         strategy[string] = [1/4 for _ in range(4)]
         regret[string] = [0 for _ in range(4)]

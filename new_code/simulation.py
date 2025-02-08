@@ -10,6 +10,8 @@ def test_simulate_round():
 
     strategy = load_strategy()
 
+    active_player = 1
+
     while True:
         state = game.new_initial_state()
 
@@ -35,21 +37,21 @@ def test_simulate_round():
                 print(action_space)
                 print([state.action_to_string(current_player, action) for action in action_space])
 
-                if current_player == 0:
+                if current_player == active_player:
                     print(parse_poker_string(state.information_state_string()))
                     action = int(input("Enter an action: "))
                 
                 else:
                     # Choose a random action
-                    temp = parse_poker_string(state.information_state_string())
-                    cards = abstractioncards(temp)
-                    context = abstractbetting(temp)
-                    res = cards + context
+                    res = get_infostate(state)
                     policy = strategy[res]
                     policy_list = [policy[i] for i in action_space]
-                    # print(res, policy)
-                    policy_list = [p / sum(policy_list) for p in policy_list]
-                    action = np.random.choice(action_space, p=policy_list)
+                    print(res, policy)
+                    if(sum(policy_list) == 0):
+                        action = 1
+                    else:
+                        policy_list = [p / sum(policy_list) for p in policy_list]
+                        action = np.random.choice(action_space, p=policy_list)
 
                 # action = np.random.choice(action_space)
                 print(f"Player {current_player} takes action: {action}")
@@ -63,6 +65,7 @@ def test_simulate_round():
         print("-----Final state-----:")
         print(state)
         print(f"Returns: {state.returns()}")
+        active_player = 1 - active_player
 
 if __name__ == "__main__":
     test_simulate_round()
