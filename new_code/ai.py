@@ -125,7 +125,3 @@ def save_strategy(strategy):
 
 def load_strategy():
     pass
-
-if __name__ == "__main__":
-    ex_tree = playout_game_with_tree()
-    adjust_policy_tree_traversal_example(ex_tree, [-200, 200])
