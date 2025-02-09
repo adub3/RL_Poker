@@ -6,11 +6,12 @@ from skeleton.states import GameState, TerminalState, RoundState
 from skeleton.states import NUM_ROUNDS, STARTING_STACK, BIG_BLIND, SMALL_BLIND
 from skeleton.bot import Bot
 from skeleton.runner import parse_args, run_bot
-
+import os
+import json
 import random
-import abstractbetting
-from ai import load_strategy, MCCFR
-from abstraction import abstractbettinge, abstractioncards
+import numpy as np
+
+from abstraction import abstractioncards, abstractbettinge
 
 class Player(Bot):
     '''
@@ -57,7 +58,6 @@ class Player(Bot):
         self.cards["Private"] = round_state.hands[active]  # your cards
         self.card_string = abstractioncards(self.cards)
         self.big_blind = bool(active)  # True if you are the big blind
-        temp = abstractbettinge()
         self.log = ""
         
         pass
@@ -109,40 +109,76 @@ class Player(Bot):
         opp_contribution = STARTING_STACK - opp_stack  # the number of chips your opponent has contributed to the pot
 
         #find opp action, add to log
-        if(opp_pip > round_state.previous_state.pips[1-active]):
-            self.log += 'r'
-        else:
-            self.log += 'c'
+        if(len(self.log) >= 1):
+            if(opp_pip > round_state.previous_state.pips[1-active]):
+                self.log += 'r'
+            else:
+                self.log += 'c'
+        
+        truncated_log = self.log[-3:]
 
         # call abstraction to find scenario
-        context = abstractbettinge(self.log, round_state, active) #change abstractbetting to just extract all the information itself low key
+        context = abstractbettinge(truncated_log, round_state, active) #change abstractbetting to just extract all the information itself low key
         self.cards["Public"] = board_cards
-        self.state = abstractioncards(self.cards) + ' ' + context # create state string for lookup table
+        self.state = abstractioncards(self.cards) + context # create state string for lookup table
 
+        action_space = {0: FoldAction(), 1: CallAction(), 2: RaiseAction(min_raise), 3: RaiseAction(max_raise)}
+        legal_action_indices = []
+
+        min_raise, max_raise = round_state.raise_bounds()
+
+        if self.state in self.strategy:
+            if FoldAction in legal_actions:
+                legal_action_indices.append(0)
+            if CheckAction in legal_actions:
+                legal_action_indices.append(1)
+            if RaiseAction in legal_actions:
+                legal_action_indices.append(2)
+                legal_action_indices.append(3)
+        
+            policy = self.strategy(self.state)
+            policy_list = [policy[i] for i in legal_action_indices]
+            policy_list = [p / sum(policy_list) for p in policy_list]
+
+            action = np.random.choice(legal_action_indices, p=policy_list)
+
+            return action_space[action]
+        
+        else:
+            # Shouldn't happen:
+            raise IndexError
+            action = CheckAction()
+
+        """
         #fold, call, bet, all in
         if self.state in self.strategy:
-            ind = random.choices(len(self.strategy[context]), self.strategy[context], 1) # strategy holds the weight. chooses on strategy.
+            ind = np.random.choice([0, 1, 2, 3], p=self.strategy[context]) # strategy holds the weight. chooses on strategy.
         else:
-            ind = random.choices(4, [0.25, 0.25, 0.25, 0.25], 1) #pick at random if no data
+            ind = np.random.choice([0, 1, 2, 3], p=[1/4, 1/4, 1/4, 1/4]) #pick at random if no data
         print(ind)
 
         min_raise, max_raise = round_state.raise_bounds() # the smallest and largest numbers of chips for a legal bet/raise
         
         
-        if (ind[0] == 0 and FoldAction in legal_actions):
-            return FoldAction
-        if (ind[0] == 1 and CheckAction in legal_actions):
+        if (ind == 0 and FoldAction in legal_actions):
+            return FoldAction()
+        if (ind == 1 and CheckAction in legal_actions):
             self.log += 'c'
-            return CheckAction
-        if (ind[0] >= 2 and RaiseAction in legal_actions):
+            return CheckAction()
+        if (ind >= 2 and RaiseAction in legal_actions):
             self.log += 'r'
-            if(ind[0] == 2):
+            if(ind == 2):
                 return RaiseAction(min_raise)
             else:
                 return RaiseAction(max_raise)
         self.log += 'c'
         return CallAction()
+        """
 
+def load_strategy():
+    path = os.path.dirname(os.path.realpath(__file__))
+    set = json.load(open(f"{path}/blackjack.txt", 'r'))
+    return set
 
 if __name__ == '__main__':
 

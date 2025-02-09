@@ -2,7 +2,7 @@ import numpy as np
 import pyspiel
 import treelib
 from abstraction import abstractbetting, abstractioncards, parse_poker_string, generate_empty_strategy_and_regret
-import ujson
+import json
 import os
 
 game_config = {
@@ -137,7 +137,7 @@ def get_infostate(state):
     return infostate
 
 def save_strategy(strategy):
-    json_data = ujson.dumps(strategy)
+    json_data = json.dumps(strategy)
 
     path = os.path.dirname(os.path.realpath(__file__))
 
@@ -146,19 +146,19 @@ def save_strategy(strategy):
 
 def load_strategy():
     path = os.path.dirname(os.path.realpath(__file__))
-    set = ujson.load(open(f"{path}/blackjack.txt", 'r'))
+    set = json.load(open(f"{path}/blackjack.txt", 'r'))
     return set
 
 def selfplay():
-    strategy, regrets = generate_empty_strategy_and_regret()
-    save_strategy(strategy)
+    # strategy, regrets = generate_empty_strategy_and_regret()
+    # save_strategy(strategy)
 
-    # _, regrets = generate_empty_strategy_and_regret()
-    # strategy = load_strategy()
+    _, regrets = generate_empty_strategy_and_regret()
+    strategy = load_strategy()
 
     game = pyspiel.load_game("universal_poker", game_config)
 
-    for i in range(100000):
+    for i in range(10000000):
         state = game.new_initial_state()
         MCCFR(state, 0, strategy, regrets)
 
