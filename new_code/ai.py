@@ -165,10 +165,22 @@ def selfplay():
         state = game.new_initial_state()
         MCCFR(state, 1, strategy, regrets)
 
-        if i % 10000 == 0:
+        if i % 100000 == 0:
             save_strategy(strategy)
             print(i)
     return strategy
 
 if __name__ == "__main__":
     selfplay()
+
+
+
+
+def average():
+    one = load_strategy()
+    two = load_strategy()
+    final = {}
+
+    for i in one:
+        final[i] = one[i] + (0.3) * two[i] / 2
+    save_strategy(final)
