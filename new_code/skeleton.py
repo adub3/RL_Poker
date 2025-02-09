@@ -1,7 +1,7 @@
 '''
 Simple example pokerbot, written in Python.
 '''
-from skeleton.actions import FoldAction, CallAction, CheckAction, RaiseAction
+from skeleton.actions import FoldAction, CallAction, CheckAction, RaiseAction, BidAction
 from skeleton.states import GameState, TerminalState, RoundState
 from skeleton.states import NUM_ROUNDS, STARTING_STACK, BIG_BLIND, SMALL_BLIND
 from skeleton.bot import Bot
@@ -98,6 +98,10 @@ class Player(Bot):
         '''
 
         legal_actions = round_state.legal_actions()  # the actions you are allowed to take
+        
+        if BidAction in legal_actions:
+            return BidAction(0)
+        
         street = round_state.street  # 0, 3, 4, or 5 representing pre-flop, flop, turn, or river respectively
         board_cards = round_state.deck[:street]  # the board cards
         my_pip = round_state.pips[active]  # the number of chips you have contributed to the pot this round of betting
@@ -118,36 +122,51 @@ class Player(Bot):
         truncated_log = self.log[-3:]
 
         # call abstraction to find scenario
+        self.cards["Private"] = round_state.hands[active]
         context = abstractbettinge(truncated_log, round_state, active) #change abstractbetting to just extract all the information itself low key
         self.cards["Public"] = board_cards
         self.state = abstractioncards(self.cards) + context # create state string for lookup table
 
+        min_raise, max_raise = round_state.raise_bounds()
+
         action_space = {0: FoldAction(), 1: CallAction(), 2: RaiseAction(min_raise), 3: RaiseAction(max_raise)}
         legal_action_indices = []
-
-        min_raise, max_raise = round_state.raise_bounds()
 
         if self.state in self.strategy:
             if FoldAction in legal_actions:
                 legal_action_indices.append(0)
             if CheckAction in legal_actions:
                 legal_action_indices.append(1)
+            if CallAction in legal_actions:
+                legal_action_indices.append(1)
             if RaiseAction in legal_actions:
                 legal_action_indices.append(2)
                 legal_action_indices.append(3)
+            
+            # print(legal_actions, legal_action_indices)
         
-            policy = self.strategy(self.state)
+            policy = self.strategy[self.state]
             policy_list = [policy[i] for i in legal_action_indices]
-            policy_list = [p / sum(policy_list) for p in policy_list]
+            if(sum(policy_list) == 0):
+                policy_list = [1 / len(legal_action_indices) for _ in legal_action_indices]
+            else:
+                policy_list = [p / sum(policy_list) for p in policy_list]
 
-            action = np.random.choice(legal_action_indices, p=policy_list)
+            action_index = np.random.choice(legal_action_indices, p=policy_list)
+            if action_index == 1:
+                if CheckAction in legal_actions:
+                    return CheckAction()
+                else:
+                    return CallAction()
 
-            return action_space[action]
+            return action_space[action_index]
         
         else:
             # Shouldn't happen:
-            raise IndexError
-            action = CheckAction()
+            if CheckAction in legal_actions:
+                return CheckAction()
+            else:
+                return CallAction()
 
         """
         #fold, call, bet, all in
