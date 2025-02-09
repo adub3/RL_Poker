@@ -99,9 +99,6 @@ class Player(Bot):
 
         legal_actions = round_state.legal_actions()  # the actions you are allowed to take
         
-        if BidAction in legal_actions:
-            return BidAction(0)
-        
         street = round_state.street  # 0, 3, 4, or 5 representing pre-flop, flop, turn, or river respectively
         board_cards = round_state.deck[:street]  # the board cards
         my_pip = round_state.pips[active]  # the number of chips you have contributed to the pot this round of betting
@@ -111,6 +108,10 @@ class Player(Bot):
         continue_cost = opp_pip - my_pip  # the number of chips needed to stay in the pot
         my_contribution = STARTING_STACK - my_stack  # the number of chips you have contributed to the pot
         opp_contribution = STARTING_STACK - opp_stack  # the number of chips your opponent has contributed to the pot
+
+
+        if BidAction in legal_actions:
+            return BidAction(int((opp_pip + my_pip)/3))
 
         #find opp action, add to log
         if(len(self.log) >= 1):
