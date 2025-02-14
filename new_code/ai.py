@@ -80,7 +80,7 @@ def MCCFR(state, player: int, strategy, regrets):
         new_state = state.clone()
 
         action_space = state.legal_actions()
-        policy = calculate_strategy(state, strategy, regrets)[res]
+        policy = calculate_strategy(state, strategy, regrets)[res] #we can implement linear discount factor here by just adding or a multiplicative one by using some sort of additional algorithm?
         policy_list = [policy[i] for i in action_space]
         # print(res, policy)
         policy_list = [p / sum(policy_list) for p in policy_list]
