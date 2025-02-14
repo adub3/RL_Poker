@@ -1,5 +1,3 @@
-import math
-
 game_config = {
     "betting": "nolimit", # Betting style: "limit" or "nolimit"
     "numPlayers": 2,      # Number of players
