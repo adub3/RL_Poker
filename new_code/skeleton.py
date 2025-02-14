@@ -1,5 +1,5 @@
 '''
-Simple example pokerbot, written in Python.
+For UNC Pokerbots Competition 2025
 '''
 from skeleton.actions import FoldAction, CallAction, CheckAction, RaiseAction, BidAction
 from skeleton.states import GameState, TerminalState, RoundState
