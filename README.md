@@ -13,9 +13,8 @@ The goal of this project is to train an AI agent capable of playing heads-up No-
 ## 🧠 Key Features
 
 - **MCCFR Algorithm**: Implements external sampling MCCFR for scalable learning.
-- **Game Engine**: Customizable poker environment supporting various rule sets.
+- **Game Engine**: Using Openspiels Poker enviroment with diffrent sets of abstractions.
 - **Strategy Abstraction**: Hand strength bucketing and action abstraction for tractable play.
-- **Evaluation Tools**: Exploitability metrics and matchplay logging.
 - **Modular Design**: Easy to swap out game variants, abstractions, and sampling policies.
 
 ---
