@@ -37,4 +37,5 @@ The goal of this project is to train an AI agent capable of playing heads-up No-
 
 ## 📚 Resources
 [Superhuman AI for multiplayer poker (Brown Et Al.)](https://www.science.org/doi/10.1126/science.aay2400)
+
 [OpenSpiel](https://github.com/google-deepmind/open_spiel/blob/master/open_spiel/python/algorithms/mccfr.py)
