@@ -1,0 +1,13 @@
+.DS_Store
+.venv/
+__pycache__/
+*.pyc
+assets/
+checkpoints/
+data/
+docs/
+eval/
+*.log
+*.pid
+new_code/blackjack_smoke.txt
+new_code/mccfr_table_smoke.json
