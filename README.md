@@ -1,40 +1,37 @@
-# 🃏 Reinforcement Learning Poker Bot using MCCFR
+# Poker MCCFR Bot
 
-This repository contains an implementation of a **Heads Up No Limit (HUNL) Poker Bot** trained using **Monte Carlo Counterfactual Regret Minimization (MCCFR)** — a state-of-the-art reinforcement learning algorithm for solving large imperfect-information games like Poker.
+This repository contains a poker AI prototype focused on abstraction and Monte
+Carlo Counterfactual Regret Minimization.
 
----
+## Layout
 
-## 🚀 Overview
+- `new_code/` - active implementation.
+  - `ai.py` - Linear MCCFR trainer and strategy table.
+  - `abstraction.py` - card and betting abstraction helpers.
+  - `skeleton.py` - pokerbot integration that loads an exported strategy.
+  - `simulation.py` - interactive simulation helper.
+  - `test_ai_core.py` - lightweight tests for MCCFR table mechanics.
+- `docs/` - papers and reference material.
+- `assets/` - diagrams and images.
+- `data/` - generated data files.
+- `tools/visualization/` - scripts that generate diagrams.
+- `archive/` - older prototypes and legacy experiments kept for reference.
 
-The goal of this project is to train an AI agent capable of playing heads-up No-Limit Texas Hold’em (or other variants) competitively using self-play and regret minimization techniques. Unlike traditional tabular approaches, MCCFR uses sampled trajectories to scale to larger game trees and efficiently converge toward Nash equilibrium strategies.
+## Setup
 
----
+The project is currently pinned to Python 3.11.9 with `pyenv-win`.
 
-## 🧠 Key Features
+```powershell
+pip install -r requirements.txt
+```
 
-- **MCCFR Algorithm**: Implements external sampling MCCFR for scalable learning.
-- **Game Engine**: Using Openspiels Poker enviroment with diffrent sets of abstractions.
-- **Strategy Abstraction**: Hand strength bucketing and action abstraction for tractable play.
-- **Modular Design**: Easy to swap out game variants, abstractions, and sampling policies.
+## Checks
 
----
+```powershell
+python -B new_code\test_ai_core.py
+```
 
-## 🧱 Project Structure
-
-**TBA**
-
----
-
-## 📈 How It Works
-
-1. **Information Set Generation**: The game state is abstracted into an information set that includes hidden and visible information (e.g., private cards, public board, betting history).
-2. **Regret Sampling**: The agent samples trajectories and updates regrets for actions based on counterfactual values.
-3. **Strategy Averaging**: Over iterations, the average strategy (rather than the current one) is recorded as the output.
-4. **Convergence**: With enough iterations, the strategy converges to a Nash equilibrium.
-
----
-
-## 📚 Resources
-[Superhuman AI for multiplayer poker (Brown Et Al.)](https://www.science.org/doi/10.1126/science.aay2400)
-
-[OpenSpiel](https://github.com/google-deepmind/open_spiel/blob/master/open_spiel/python/algorithms/mccfr.py)
+OpenSpiel is installed and works for `kuhn_poker` and `leduc_poker`. The
+current Windows wheel does not register `universal_poker`, so Texas hold'em
+training needs either a source build with that binding enabled or a different
+game backend.

@@ -1,7 +1,6 @@
 import math
 import numpy as np
-import pyspiel
-from ai import game_config
+from abstraction import abstractioncards, abstractbettinge
 
 # Define action space
 action_space = np.array([0, 1, 2, 3, 4], dtype=np.uint8)
@@ -135,6 +134,72 @@ def test_play_against_strategy(strategy):
             print(f"Player {current_player} takes action: {action}")
             state.apply_action(action)
 
+def test_abstraction_functions():
+    print("\n--- Testing Abstraction Functions ---")
+
+    # Mock data for abstractioncards
+    # Example 1: Pre-flop, two hole cards
+    data_dict_1 = {"Private": ["Ac", "Kd"], "Public": []}
+    card_abstraction_1 = abstractioncards(data_dict_1)
+    print(f"Card Abstraction 1 (Ac Kd, pre-flop): {card_abstraction_1}") # Expected: High card type for Ace, King with no draws
+
+    # Example 2: Flop, pair on board
+    data_dict_2 = {"Private": ["As", "Qs"], "Public": ["Kc", "Qd", "Jh"]}
+    card_abstraction_2 = abstractioncards(data_dict_2)
+    print(f"Card Abstraction 2 (As Qs, Kc Qd Jh): {card_abstraction_2}") # Expected: Pair type (Queens), possible straight/flush draws
+
+    # Example 3: Flush draw on turn
+    data_dict_3 = {"Private": ["7h", "8h"], "Public": ["2h", "Kh", "Th", "5d"]}
+    card_abstraction_3 = abstractioncards(data_dict_3)
+    print(f"Card Abstraction 3 (7h 8h, 2h Kh Th 5d): {card_abstraction_3}") # Expected: Flush type, flush draw info
+
+    # Mock data for abstractbettinge
+    # Need to mock a RoundState object minimally for abstractbettinge
+    class MockRoundState:
+        def __init__(self, pips_active, pips_opponent, street, recursion_depth=0):
+            self.pips = [pips_active, pips_opponent]
+            self.street = street
+            # minimal previous_state needed for skeleton.py
+            if recursion_depth < 1:
+                self.previous_state = MockRoundState(pips_active, pips_opponent, street, recursion_depth + 1)
+            else:
+                self.previous_state = None
+
+        
+        # Override previous_state.pips for testing purposes.
+        # This is a hack, but sufficient for just abstractbettinge
+        def set_previous_pips(self, pips_active, pips_opponent):
+            self.previous_state.pips = [pips_active, pips_opponent]
+
+    # Example 4: Simple betting log
+    mock_round_state_4 = MockRoundState(10, 10, 0) # my_pip, opp_pip, street
+    mock_round_state_4.set_previous_pips(0, 0) # previous round pips
+    betting_log_4 = "cc" # two calls
+    betting_abstraction_4 = abstractbettinge(betting_log_4, mock_round_state_4, 0)
+    print(f"Betting Abstraction 4 (cc): {betting_abstraction_4}")
+
+    # Example 5: Raise and call
+    mock_round_state_5 = MockRoundState(20, 20, 0)
+    mock_round_state_5.set_previous_pips(10, 10)
+    betting_log_5 = "rc" # raise then call
+    betting_abstraction_5 = abstractbettinge(betting_log_5, mock_round_state_5, 0)
+    print(f"Betting Abstraction 5 (rc): {betting_abstraction_5}")
+
+    # Example 6: Three actions
+    mock_round_state_6 = MockRoundState(30, 30, 0)
+    mock_round_state_6.set_previous_pips(20, 20)
+    betting_log_6 = "rcr" # raise, call, raise
+    betting_abstraction_6 = abstractbettinge(betting_log_6, mock_round_state_6, 0)
+    print(f"Betting Abstraction 6 (rcr): {betting_abstraction_6}")
+
+    # Example 7: Betting with amounts
+    mock_round_state_7 = MockRoundState(100, 100, 0)
+    mock_round_state_7.set_previous_pips(0,0)
+    betting_log_7 = "r50c" # raise 50, call
+    betting_abstraction_7 = abstractbettinge(betting_log_7, mock_round_state_7, 0)
+    print(f"Betting Abstraction 7 (r50c): {betting_abstraction_7}")
+
+
+
 if __name__ == "__main__":
-    strategy = test_mccfr()
-    test_play_against_strategy(strategy)
+    test_abstraction_functions()

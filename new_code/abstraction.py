@@ -9,10 +9,13 @@ import itertools
 
 #(1: High Card, 2: Pair, 3: Trips, 4: Straight, 5: Flush, 6: Full House, 7: Quads, 8: Straight Flush and ...)
 
+RANK_SYMBOLS_BY_EVAL7 = "23456789TJQKA"
+RANK_VALUE_BY_SYMBOL = {rank: index for index, rank in enumerate(RANK_SYMBOLS_BY_EVAL7)}
+BRACKET_RE = re.compile(r"\[(.*?)\]")
+PREFLOP_SEQUENCE_TOKEN_RE = re.compile(r"r\d+|[cf]")
+
 def parse_poker_string(poker_string):
-    # Define a regex pattern to extract key-value pairs inside the brackets
-    pattern = r'\[(.*?)\]'
-    matches = re.findall(pattern, poker_string)
+    matches = BRACKET_RE.findall(poker_string)
     
     # Initialize an empty dictionary to store the parsed information
     parsed_data = {}
@@ -56,15 +59,16 @@ def missing_for_straight_with_debug(rank_counts):
         that minimum was found.
     
     We assume:
-      - Cards are valued from 2 up to Ace (14).
+      - eval7 ranks are used: 2 is 0, 3 is 1, ..., Ace is 12.
       - A straight must be exactly 5 consecutive values.
     """
     min_missing = float('inf')
     best_sequence = None
     
-    # Check every possible straight from 2-6 up to 10-14.
-    for start in range(1, 11):  # 10 is the last starting card: 10,11,12,13,14
-        straight = list(range(start, start + 5))
+    straights = [[0, 1, 2, 3, 12]]  # A-2-3-4-5
+    straights.extend([list(range(start, start + 5)) for start in range(0, 9)])
+
+    for straight in straights:
         missing = sum(1 for card in straight if rank_counts.get(card, 0) == 0)
         
         # Debug: print the straight and how many cards are missing.
@@ -126,52 +130,144 @@ def abstractbettinge(log, round_state, active): #abstracts raises into floor(mat
 
 # Example usage
 def abstractbetting(datadict): #abstracts raises into floor(math.log(number/adjusted_pot + 1) * 4) 
-    sequence = datadict["Sequences"]   #message log of game actions
-    initial_pot = datadict["Pot"]
-    result = ""
-    current_number = ""
-    current_pot = int(initial_pot)
-    future_bets = []
-    
-    # First pass: collect all bets
-    temp_num = ""
-    for char in sequence:
-        if char.isdigit():
-            temp_num += char
-        elif temp_num:
-            future_bets.append(int(temp_num))
-            temp_num = ""
-    if temp_num:
-        future_bets.append(int(temp_num))
-    
-    # Second pass: process sequence
-    bet_index = 0
-    for char in sequence:
-        if char == 'c':
-            result += 'c'
-        elif char == 'r':
-            if current_number:
-                number = int(current_number)
-                # Calculate remaining future bets
-                remaining_bets = sum(future_bets[bet_index + 1:])
-                # Adjust pot for current calculation
-                adjusted_pot = current_pot - remaining_bets
-                # processed_number = math.floor(math.log(number/adjusted_pot + 1) * 4)
-                # result += str(processed_number)
-                current_pot += number  # Update pot for next calculations
-                current_number = ""
-                bet_index += 1
-            result += 'r'
-        elif char.isdigit():
-            current_number += char
-    
-    # Process any remaining number at the end
-    # if current_number:
-    #     number = int(current_number)
-    #     processed_number = math.floor(math.log(number/current_pot + 1) * 4)
-    #     result += str(processed_number)
-    
-    return f"[{result[0:3]}]"
+    result = []
+    for char in datadict["Sequences"]:
+        if char == "c" or char == "r":
+            result.append(char)
+            if len(result) >= 3:
+                break
+    return f"[{''.join(result)}]"
+
+
+def preflop_betting_context(data_dict, big_blind=100):
+    player = int(data_dict.get("Player", 0) or 0)
+    money = data_dict.get("Money") or []
+    sequence = data_dict.get("Sequences", "") or ""
+    to_call = _to_call_from_money(money, player)
+    effective_stack = _effective_stack_before_current_action(money, to_call)
+    sequence_bucket = _preflop_sequence_bucket(sequence, effective_stack, big_blind)
+
+    return (
+        f"[pos:P{player}]"
+        f"[tc:{_bb_bucket(to_call, big_blind)}]"
+        f"[eff:{_stack_bucket(effective_stack, big_blind)}]"
+        f"[seq:{sequence_bucket}]"
+    )
+
+
+def _to_call_from_money(money, player):
+    if len(money) < 2:
+        return 0
+    opponent = 1 - player
+    return max(0, int(money[player]) - int(money[opponent]))
+
+
+def _effective_stack_before_current_action(money, to_call):
+    if len(money) < 2:
+        return 0
+    return max(0, min(int(money[0]), int(money[1])) + int(to_call))
+
+
+def _preflop_sequence_bucket(sequence, effective_stack, big_blind):
+    tokens = PREFLOP_SEQUENCE_TOKEN_RE.findall(sequence)
+    if not tokens:
+        return "open"
+
+    result = []
+    previous_raise = None
+    for token in tokens:
+        if token in ("c", "f"):
+            result.append(token)
+            continue
+
+        amount = int(token[1:])
+        result.append(
+            "r:" + _raise_size_bucket(
+                amount,
+                previous_raise=previous_raise,
+                effective_stack=effective_stack,
+                big_blind=big_blind,
+            )
+        )
+        previous_raise = amount
+
+    return "|".join(result)
+
+
+def _raise_size_bucket(amount, previous_raise, effective_stack, big_blind):
+    if effective_stack and amount >= 0.95 * effective_stack:
+        return "jam"
+
+    candidates = {
+        "2bb": 2.0 * big_blind,
+        "2_5bb": 2.5 * big_blind,
+        "3bb": 3.0 * big_blind,
+        "4bb": 4.0 * big_blind,
+    }
+
+    if previous_raise:
+        candidates["3x"] = 3.0 * previous_raise
+        candidates["4x"] = 4.0 * previous_raise
+
+    if effective_stack:
+        candidates["25eff"] = 0.25 * effective_stack
+        candidates["50eff"] = 0.50 * effective_stack
+
+    return min(candidates, key=lambda label: abs(candidates[label] - amount))
+
+
+def _bb_bucket(amount, big_blind):
+    if amount <= 0:
+        return "0bb"
+    value = amount / big_blind
+    buckets = (0.5, 1, 2, 2.5, 3, 4, 6, 8, 10, 15, 25, 50, 100)
+    nearest = min(buckets, key=lambda bucket: abs(bucket - value))
+    return _format_bucket(nearest, "bb")
+
+
+def _stack_bucket(amount, big_blind):
+    if amount <= 0:
+        return "0bb"
+    value = amount / big_blind
+    buckets = (10, 20, 30, 40, 50, 75, 100, 150, 200)
+    nearest = min(buckets, key=lambda bucket: abs(bucket - value))
+    return _format_bucket(nearest, "bb")
+
+
+def _format_bucket(value, suffix):
+    if float(value).is_integer():
+        return f"{int(value)}{suffix}"
+    return f"{str(value).replace('.', '_')}{suffix}"
+
+
+def preflop_lossless_cards(data_dict):
+    private_cards = data_dict.get("Private", [])
+    if len(private_cards) != 2:
+        raise ValueError("preflop lossless abstraction requires exactly two private cards")
+
+    first, second = private_cards
+    first_rank, first_suit = first[0], first[1]
+    second_rank, second_suit = second[0], second[1]
+
+    ranked = sorted(
+        [first_rank, second_rank],
+        key=lambda rank: RANK_VALUE_BY_SYMBOL[rank],
+        reverse=True,
+    )
+    suitedness = "s" if first_suit == second_suit else "o"
+    if ranked[0] == ranked[1]:
+        return f"[PF:{ranked[0]}{ranked[1]}]"
+    return f"[PF:{ranked[0]}{ranked[1]}{suitedness}]"
+
+
+def postflop_lossy_cards(data_dict):
+    return abstractioncards(data_dict)
+
+
+def abstractioncards_street_aware(data_dict):
+    if not data_dict.get("Public"):
+        return preflop_lossless_cards(data_dict)
+    return postflop_lossy_cards(data_dict)
 
 
 def abstractioncards(data_dict):
@@ -202,15 +298,15 @@ def abstractioncards(data_dict):
     suit_counts_board = {}  # Suit counts for just the board
 
     for card in [eval7.Card(s) for s in data_dict["Public"]]:
-        rank_counts_board[card.rank] = rank_counts.get(card.rank, 0) + 1
+        rank_counts_board[card.rank] = rank_counts_board.get(card.rank, 0) + 1
         #print(rank_counts_board)
         suit_counts_board[card.suit] = suit_counts_board.get(card.suit, 0) + 1
 
     if hand_type == "High Card": #str starts w/ 1
-        highest_card = max(eval7allcards, key=lambda card: card.rank)
-        if highest_card == 14:
+        highest_rank = max(card.rank for card in eval7allcards)
+        if highest_rank == 12:
             abtype = "11"
-        if highest_card == 13:
+        elif highest_rank == 11:
             abtype = "12"
         else:
             abtype = "13"
@@ -271,7 +367,7 @@ def abstractioncards(data_dict):
                 abtype = abtype + '3'
         if hand_type == 'Trips':
             abtype = "4"
-            if relative_value == "Set":
+            if typetrips == "Set":
                 abtype = abtype + "1"
             else:
                 abtype = abtype + "0"
@@ -296,9 +392,9 @@ def abstractioncards(data_dict):
         missingcards = missing_for_straight_with_debug(rank_counts_board)
         if missingcards == 2:
             type = 1
-        if missingcards == 1:
+        elif missingcards == 1:
             type = 2
-        if missingcards == 0:
+        elif missingcards == 0:
             type = 3
         else:
             type = 0
@@ -308,16 +404,18 @@ def abstractioncards(data_dict):
         boardsuited = max(suit_counts_board.values(), default=0)
         if boardsuited == 3:
             cardsused = '2'
-        if boardsuited == 4:
+        elif boardsuited == 4:
             cardsused = '1'
-        if boardsuited == 5:
+        elif boardsuited == 5:
             cardsused = "0"
+        else:
+            cardsused = "3"
         abtype =  "6" + cardsused
     
     elif hand_type == "Quads":
         abtype =  "7"
 
-    elif hand_type == "Straight Flush" or "Royal Flush":
+    elif hand_type in ("Straight Flush", "Royal Flush"):
         abtype = "8"
     
     #flushdraw and straightdrawcode

@@ -1,173 +1,1027 @@
-import numpy as np
-import pyspiel
-import treelib
-from abstraction import abstractbetting, abstractioncards, parse_poker_string, generate_empty_strategy_and_regret
+import csv
+import gzip
 import json
 import os
+import sys
+from bisect import bisect_left, bisect_right
+from dataclasses import dataclass
+
+import numpy as np
+
+from abstraction import (
+    abstractbetting,
+    abstractioncards_street_aware,
+    parse_poker_string,
+    preflop_betting_context,
+)
 from const import game_config
 
-class NodeData:
-    def __init__(self, state, value=None, policy=[]) -> None:
-        # Store variables like the game state, value, policy, etc.
-        self.state = state
 
-        # These variables aren't used, they're just examples
-        self.value = value
-        self.policy = policy
-        self.visited = False
-        self.action_taken = None
-
-def MCCFR(state, player: int, strategy, regrets):
-    """
-    Performs Counterfactual Regret.
-    
-    Here I'm not using treelib.Node or NodeData, because it's easier.
-
-    Args:
-        state: The current state of the game.
-        player (int): The identifier of the player for whom CFR is computed.
-    """
-
-    if state.is_terminal():
-        return state.rewards()[player] # Get the reward for the player
-    
-    # elif player not in range(state.num_players()):
-        # This case should never occur
-
-    elif state.is_chance_node():
-        new_state = state.clone() # Make a copy
-
-        outcomes_with_probs = new_state.chance_outcomes()
-        action_list, prob_list = zip(*outcomes_with_probs)
-
-        action = np.random.choice(action_list, p=prob_list) # Choose a random "action"
-        new_state.apply_action(action)
-    
-        return MCCFR(new_state, player, strategy, regrets)
-    
-    elif state.current_player() == player:
-        res = get_infostate(state)
-
-        value = 0
-        action_space = state.legal_actions()
-        policy = calculate_strategy(state, strategy, regrets)[res]
-        # MATCH POLICY AND ACTIONS TOGETHER, AND SOFTMAX
-
-        # Actions are numbered 0 to n - 1 in the action_space, 
-        # thus the corresponding policy is policy_list[action]
-        # Truncate; this new list is normalized
-        policy_list = [policy[i] for i in action_space]
-        policy_list = [p / sum(policy_list) for p in policy_list]
+DEFAULT_PRUNE_THRESHOLD = -300_000_000
+DEFAULT_POT_FRACTIONS = (1 / 3, 1 / 2, 3 / 4, 1.0, 1.5, 2.0)
+DEFAULT_STACK_FRACTIONS = (1 / 4, 1 / 2, 3 / 4)
+RANK_VALUE_BY_CARD = {
+    "2": 2,
+    "3": 3,
+    "4": 4,
+    "5": 5,
+    "6": 6,
+    "7": 7,
+    "8": 8,
+    "9": 9,
+    "T": 10,
+    "J": 11,
+    "Q": 12,
+    "K": 13,
+    "A": 14,
+}
+ACTION_BUCKETS = (
+    "fold",
+    "call/check",
+    "min_raise",
+    "open_2_5bb",
+    "open_3bb",
+    "raise_2_5bb",
+    "raise_3bb",
+    "raise_3x",
+    "raise_4x",
+    "raise_25eff",
+    "raise_50eff",
+    "jam",
+    "<500",
+    "500-999",
+    "1k-4.9k",
+    "5k-9.9k",
+    "10k-19.9k",
+    "20k+",
+)
 
 
-        action_value_list = []
-        for action, policy in zip(action_space, policy_list):
-            new_state = state.clone()
-            new_state.apply_action(action)
+@dataclass(frozen=True, slots=True)
+class DecisionAction:
+    key: str
+    action_id: int
 
-            action_value = MCCFR(new_state, player, strategy, regrets)
-            action_value_list.append(action_value)
+    def __int__(self):
+        return int(self.action_id)
 
-            value = value + action_value * policy
-        
-        # Update regrets
-        for i, action_index in enumerate(action_space): # This is confusing but it works
-            regrets[res][action_index] = regrets[res][action_index] + action_value_list[i] - value
-        
-        return value
-    else: # I believe this case occurs when it's the other player's turn
-        res = get_infostate(state)
-        new_state = state.clone()
 
-        action_space = state.legal_actions()
-        policy = calculate_strategy(state, strategy, regrets)[res] #we can implement linear discount factor here by just adding or a multiplicative one by using some sort of additional algorithm?
-        policy_list = [policy[i] for i in action_space]
-        # print(res, policy)
-        policy_list = [p / sum(policy_list) for p in policy_list]
+def _action_key(action):
+    if isinstance(action, DecisionAction):
+        return action.key
+    if isinstance(action, str):
+        return action
+    return sys.intern(str(int(action)))
 
-        action = np.random.choice(action_space, p=policy_list)
-        new_state.apply_action(action)
-        return MCCFR(new_state, player, strategy, regrets)
 
-def calculate_strategy(state, strategy, regrets):
-    """
-    Uses regrets to update the strategy.
-    
-    Why is it called calculate
-    """
-    sum = 0
+def _action_keys(actions):
+    return [_action_key(action) for action in actions]
 
-    infostate = get_infostate(state)
-    
 
-    policy = strategy[infostate]
-    node_regrets = regrets[infostate]
+def _infoset_from_parsed(parsed):
+    cards = abstractioncards_street_aware(parsed)
+    if not parsed.get("Public"):
+        context = preflop_betting_context(parsed)
+    else:
+        context = abstractbetting(parsed)
+    return sys.intern(cards + context)
 
-    actions = state.legal_actions()
-    action_size = len(actions)
 
-    for action in actions:
-        sum += max(0, node_regrets[action])
-    
-    for action in actions:
-        if sum > 0:
-            policy[action] = round(max(0, node_regrets[action]) / sum, 2)
-        else:
-            policy[action] = round(1 / len(actions), 2)
-    
-    return strategy
+def action_bucket(action):
+    key = _action_key(action)
+    label_buckets = {
+        "fold": "fold",
+        "call": "call/check",
+        "check": "call/check",
+        "call_check": "call/check",
+        "min_raise": "min_raise",
+        "open_2_5bb": "open_2_5bb",
+        "open_3bb": "open_3bb",
+        "raise_2_5bb": "raise_2_5bb",
+        "raise_3bb": "raise_3bb",
+        "raise_3x": "raise_3x",
+        "raise_4x": "raise_4x",
+        "raise_25eff": "raise_25eff",
+        "raise_50eff": "raise_50eff",
+        "jam": "jam",
+    }
+    if key in label_buckets:
+        return label_buckets[key]
+    action = int(action)
+    if action == 0:
+        return "fold"
+    if action == 1:
+        return "call/check"
+    if action < 500:
+        return "<500"
+    if action < 1_000:
+        return "500-999"
+    if action < 5_000:
+        return "1k-4.9k"
+    if action < 10_000:
+        return "5k-9.9k"
+    if action < 20_000:
+        return "10k-19.9k"
+    return "20k+"
+
+
+def _action_sort_key(action):
+    key = _action_key(action)
+    try:
+        return (0, int(key))
+    except ValueError:
+        return (1, key)
+
 
 def get_infostate(state):
-    temp = parse_poker_string(state.information_state_string())
-    cards = abstractioncards(temp)
-    context = abstractbetting(temp)
-    infostate = cards + context
-    return infostate
+    parsed = parse_poker_string(state.information_state_string())
+    return _infoset_from_parsed(parsed)
 
-def save_strategy(strategy):
-    json_data = json.dumps(strategy)
 
-    path = os.path.dirname(os.path.realpath(__file__))
+def preflop_hand_strength(private_cards):
+    first, second = private_cards
+    first_rank = RANK_VALUE_BY_CARD[first[0]]
+    second_rank = RANK_VALUE_BY_CARD[second[0]]
+    high = max(first_rank, second_rank)
+    low = min(first_rank, second_rank)
 
-    with open(f"{path}/blackjack.txt", 'w') as out_file:
-        out_file.write(json_data)
+    if high == low:
+        return min(0.92, 0.50 + high / 14.0 * 0.40)
 
-def load_strategy():
-    path = os.path.dirname(os.path.realpath(__file__))
-    set = json.load(open(f"{path}/blackjack.txt", 'r'))
-    return set
+    suited_bonus = 0.035 if first[1] == second[1] else 0.0
+    gap = high - low - 1
+    connected_bonus = max(0.0, 0.04 - 0.01 * gap)
+    broadway_bonus = 0.03 if low >= 10 else 0.0
+    ace_bonus = 0.025 if high == 14 else 0.0
+    strength = (
+        0.24
+        + high / 14.0 * 0.30
+        + low / 14.0 * 0.18
+        + suited_bonus
+        + connected_bonus
+        + broadway_bonus
+        + ace_bonus
+    )
+    return max(0.25, min(0.78, strength))
 
-def selfplay():
-    # strategy, regrets = generate_empty_strategy_and_regret()
-    # save_strategy(strategy)
 
-    _, regrets = generate_empty_strategy_and_regret()
-    strategy = load_strategy()
+class StrategyTable:
+    """
+    Sparse regret and strategy table keyed by abstract infoset.
+
+    Each infoset stores action-indexed regrets, current strategy, and an average
+    strategy accumulator. Actions are stored as strings so the table is JSON
+    serializable without losing OpenSpiel's action ids.
+    """
+
+    def __init__(self, data=None):
+        self.data = data or {}
+
+    def ensure_infoset(self, infoset, legal_actions, action_keys=None):
+        if not isinstance(infoset, str):
+            infoset = sys.intern(str(infoset))
+        if action_keys is None:
+            action_keys = _action_keys(legal_actions)
+        node = self.data.setdefault(
+            infoset,
+            {"regret": {}, "strategy": {}, "strategy_sum": {}, "visits": 0},
+        )
+        regret = node["regret"]
+        strategy = node["strategy"]
+        strategy_sum = node["strategy_sum"]
+        for key in action_keys:
+            regret.setdefault(key, 0.0)
+            strategy.setdefault(key, 0.0)
+            strategy_sum.setdefault(key, 0.0)
+        return node
+
+    def regret_matching(self, infoset, legal_actions):
+        action_keys = _action_keys(legal_actions)
+        node = self.ensure_infoset(infoset, legal_actions, action_keys)
+        regret = node["regret"]
+        positive_regrets = []
+        normalizer = 0.0
+        for key in action_keys:
+            value = float(regret[key])
+            positive = value if value > 0.0 else 0.0
+            positive_regrets.append(positive)
+            normalizer += positive
+
+        if normalizer > 0:
+            probs = [positive / normalizer for positive in positive_regrets]
+        else:
+            probs = [1.0 / len(legal_actions) for _ in legal_actions]
+
+        strategy = node["strategy"]
+        for key, prob in zip(action_keys, probs):
+            strategy[key] = prob
+        return probs
+
+    def add_regret(self, infoset, action, amount, floor=None):
+        key = _action_key(action)
+        node = self.ensure_infoset(infoset, [action], [key])
+        updated = float(node["regret"][key]) + amount
+        if floor is not None:
+            updated = max(floor, updated)
+        node["regret"][key] = updated
+
+    def add_average_strategy(self, infoset, legal_actions, probs, weight):
+        action_keys = _action_keys(legal_actions)
+        node = self.ensure_infoset(infoset, legal_actions, action_keys)
+        node["visits"] += 1
+        strategy_sum = node["strategy_sum"]
+        for key, prob in zip(action_keys, probs):
+            strategy_sum[key] += weight * prob
+
+    def average_strategy(self):
+        average = {}
+        for infoset, node in self.data.items():
+            total = sum(float(value) for value in node["strategy_sum"].values())
+            if total <= 0:
+                actions = list(node["strategy"].keys())
+                if not actions:
+                    average[infoset] = {}
+                else:
+                    average[infoset] = {
+                        action: 1.0 / len(actions) for action in actions
+                    }
+                continue
+            average[infoset] = {
+                action: float(value) / total
+                for action, value in node["strategy_sum"].items()
+            }
+        return average
+
+    def current_strategy(self):
+        return {
+            infoset: {
+                action: float(prob)
+                for action, prob in node.get("strategy", {}).items()
+            }
+            for infoset, node in self.data.items()
+        }
+
+
+def merge_strategy_tables(tables):
+    """
+    Sum sparse table fields from independently trained workers.
+
+    The merge is intentionally additive for regret, strategy_sum, and visits.
+    Current strategy is copied as an aggregate weighted by strategy_sum when
+    available, otherwise regret-matched on the merged action set.
+    """
+    merged = StrategyTable()
+    for table in tables:
+        source = table.data if isinstance(table, StrategyTable) else table
+        for infoset, node in source.items():
+            target = merged.data.setdefault(
+                infoset,
+                {"regret": {}, "strategy": {}, "strategy_sum": {}, "visits": 0},
+            )
+            target["visits"] += int(node.get("visits", 0))
+            for field in ("regret", "strategy_sum"):
+                for action, value in node.get(field, {}).items():
+                    key = _action_key(action)
+                    target[field][key] = float(target[field].get(key, 0.0)) + float(
+                        value
+                    )
+                    target["strategy"].setdefault(key, 0.0)
+            for action, value in node.get("strategy", {}).items():
+                key = _action_key(action)
+                target["strategy"].setdefault(key, float(value))
+
+    for infoset, node in merged.data.items():
+        actions = sorted(node["strategy"].keys(), key=_action_sort_key)
+        total_strategy = sum(float(node["strategy_sum"].get(action, 0.0)) for action in actions)
+        if total_strategy > 0:
+            for action in actions:
+                node["strategy"][action] = (
+                    float(node["strategy_sum"].get(action, 0.0)) / total_strategy
+                )
+        else:
+            regrets = [max(0.0, float(node["regret"].get(action, 0.0))) for action in actions]
+            normalizer = sum(regrets)
+            for action, regret in zip(actions, regrets):
+                node["strategy"][action] = (
+                    regret / normalizer if normalizer > 0 else 1.0 / len(actions)
+                )
+    return merged
+
+
+def table_metrics(table):
+    metrics = {
+        "infosets": len(table.data),
+        "total_visits": 0,
+        "total_strategy_mass": 0.0,
+        "positive_regret": 0.0,
+        "negative_regret": 0.0,
+    }
+
+    for bucket in ACTION_BUCKETS:
+        metrics[f"strategy_mass_{bucket}"] = 0.0
+        metrics[f"positive_regret_{bucket}"] = 0.0
+        metrics[f"action_entries_{bucket}"] = 0
+
+    for node in table.data.values():
+        metrics["total_visits"] += int(node.get("visits", 0))
+        strategy_sum = node.get("strategy_sum", {})
+        regret = node.get("regret", {})
+        for action, mass in strategy_sum.items():
+            bucket = action_bucket(action)
+            strategy_mass = float(mass)
+            action_regret = float(regret.get(action, 0.0))
+            metrics["total_strategy_mass"] += strategy_mass
+            metrics[f"strategy_mass_{bucket}"] += strategy_mass
+            metrics[f"action_entries_{bucket}"] += 1
+
+            if action_regret >= 0:
+                metrics["positive_regret"] += action_regret
+                metrics[f"positive_regret_{bucket}"] += action_regret
+            else:
+                metrics["negative_regret"] += action_regret
+
+    return metrics
+
+
+class TrainingCheckpointer:
+    def __init__(
+        self,
+        output_dir,
+        checkpoint_iterations=None,
+        save_full_table=True,
+        metrics_filename="metrics.csv",
+    ):
+        self.output_dir = output_dir
+        self.checkpoint_iterations = set(int(i) for i in checkpoint_iterations or [])
+        self.save_full_table = save_full_table
+        self.metrics_path = os.path.join(output_dir, metrics_filename)
+        os.makedirs(output_dir, exist_ok=True)
+
+    def maybe_save(self, trainer):
+        if trainer.iteration not in self.checkpoint_iterations:
+            return
+
+        metrics = table_metrics(trainer.table)
+        metrics["iteration"] = trainer.iteration
+        self._append_metrics(metrics)
+
+        if self.save_full_table:
+            path = os.path.join(
+                self.output_dir,
+                f"mccfr_table_iter_{trainer.iteration:08d}.json.gz",
+            )
+            save_table(trainer.table, path)
+
+    def _append_metrics(self, metrics):
+        fieldnames = ["iteration"] + [
+            key for key in metrics.keys() if key != "iteration"
+        ]
+        write_header = not os.path.exists(self.metrics_path)
+        with open(self.metrics_path, "a", newline="") as csv_file:
+            writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
+            if write_header:
+                writer.writeheader()
+            writer.writerow(metrics)
+
+
+class ActionAbstractor:
+    """
+    Selects an interpretable subset of no-limit actions.
+
+    Buckets are anchored to pot geometry and effective stack commitment, then
+    translated to the nearest legal OpenSpiel action.
+    """
+
+    def __init__(
+        self,
+        pot_fractions=DEFAULT_POT_FRACTIONS,
+        stack_fractions=DEFAULT_STACK_FRACTIONS,
+        random_probe_count=0,
+        max_actions=None,
+        rng=None,
+    ):
+        self.pot_fractions = tuple(pot_fractions)
+        self.stack_fractions = tuple(stack_fractions)
+        self.random_probe_count = random_probe_count
+        self.max_actions = max_actions
+        self.rng = rng
+
+    def select_actions(self, state, legal_actions, parsed=None):
+        legal_actions = self._sorted_int_actions(legal_actions)
+        if not legal_actions:
+            return []
+
+        parsed = parsed if parsed is not None else self._parse_state(state)
+        raise_start = bisect_right(legal_actions, 1)
+        base_actions = [
+            action for action in legal_actions[:raise_start] if action in (0, 1)
+        ]
+        base_actions.append(legal_actions[-1])
+
+        selected = list(base_actions)
+        if raise_start < len(legal_actions):
+            selected.append(legal_actions[raise_start])
+            targets = self._target_amounts(parsed)
+            for target in targets:
+                selected.append(
+                    self._nearest_action(target, legal_actions, start=raise_start)
+                )
+            if self.random_probe_count > 0:
+                selected.extend(
+                    self._random_probes(legal_actions[raise_start:], selected)
+                )
+
+        return self._dedupe_and_cap(selected)
+
+    def describe_actions(self, state, legal_actions, selected_actions):
+        parsed = self._parse_state(state)
+        player = self._current_player(state, parsed)
+        return {
+            "pot": parsed.get("Pot"),
+            "to_call": self._to_call(parsed, player),
+            "active_stack": self._active_stack(parsed, player),
+            "opponent_stack": self._opponent_stack(parsed, player),
+            "effective_stack": self._effective_stack(parsed),
+            "actions": [
+                {
+                    "action": int(action),
+                    "label": self._action_label(state, action),
+                }
+                for action in selected_actions
+            ],
+        }
+
+    def _parse_state(self, state):
+        try:
+            return parse_poker_string(state.information_state_string())
+        except Exception:
+            return {}
+
+    def _base_actions(self, state, legal_actions):
+        base = [action for action in legal_actions if int(action) in (0, 1)]
+        if legal_actions:
+            base.append(legal_actions[-1])
+        return base
+
+    def _raise_actions(self, state, legal_actions):
+        return [action for action in legal_actions if int(action) > 1]
+
+    def _split_base_and_raise_actions(self, legal_actions):
+        base_actions = []
+        raise_actions = []
+        for action in legal_actions:
+            if action in (0, 1):
+                base_actions.append(action)
+            elif action > 1:
+                raise_actions.append(action)
+        if legal_actions:
+            base_actions.append(legal_actions[-1])
+        return base_actions, raise_actions
+
+    def _sorted_int_actions(self, legal_actions):
+        if not legal_actions:
+            return []
+        if len(legal_actions) > 64 and isinstance(legal_actions[0], int):
+            return legal_actions
+        iterator = iter(legal_actions)
+        previous = next(iterator)
+        if not isinstance(previous, int):
+            return sorted(int(action) for action in legal_actions)
+        for action in iterator:
+            if not isinstance(action, int):
+                return sorted(int(item) for item in legal_actions)
+            if action < previous:
+                return sorted(legal_actions)
+            previous = action
+        return legal_actions
+
+    def _target_amounts(self, parsed):
+        pot = max(0, int(parsed.get("Pot", 0) or 0))
+        player = self._current_player(None, parsed)
+        to_call = self._to_call(parsed, player)
+        pot_after_call = pot + to_call
+        effective_stack = self._effective_stack(parsed)
+
+        targets = []
+        targets.extend(pot_after_call * fraction for fraction in self.pot_fractions)
+        targets.extend(effective_stack * fraction for fraction in self.stack_fractions)
+        if effective_stack:
+            targets.append(effective_stack)
+        return [target for target in targets if target > 0]
+
+    def _current_player(self, state, parsed):
+        if state is not None:
+            try:
+                return int(state.current_player())
+            except Exception:
+                pass
+        try:
+            return int(parsed.get("Player", 0))
+        except Exception:
+            return 0
+
+    def _to_call(self, parsed, player):
+        return max(
+            0,
+            self._active_stack(parsed, player) - self._opponent_stack(parsed, player),
+        )
+
+    def _active_stack(self, parsed, player):
+        money = parsed.get("Money") or []
+        if player < len(money):
+            return int(money[player])
+        return 0
+
+    def _opponent_stack(self, parsed, player):
+        money = parsed.get("Money") or []
+        opponent = 1 - player
+        if opponent < len(money):
+            return int(money[opponent])
+        return 0
+
+    def _effective_stack(self, parsed):
+        money = parsed.get("Money") or []
+        if len(money) >= 2:
+            return max(0, min(int(money[0]), int(money[1])))
+        return 0
+
+    def _nearest_action(self, target, legal_actions, start=0):
+        index = bisect_left(legal_actions, target, lo=start)
+        if index <= start:
+            return legal_actions[start]
+        if index >= len(legal_actions):
+            return legal_actions[-1]
+        lower = legal_actions[index - 1]
+        upper = legal_actions[index]
+        if abs(target - lower) <= abs(upper - target):
+            return lower
+        return upper
+
+    def _random_probes(self, legal_actions, selected):
+        if self.random_probe_count <= 0:
+            return []
+        remaining = [action for action in legal_actions if action not in selected]
+        if not remaining:
+            return []
+        count = min(int(self.random_probe_count), len(remaining))
+        rng = self.rng or np.random.default_rng()
+        return [int(action) for action in rng.choice(remaining, size=count, replace=False)]
+
+    def _dedupe_and_cap(self, actions):
+        deduped = []
+        seen = set()
+        for action in actions:
+            action = int(action)
+            if action not in seen:
+                deduped.append(action)
+                seen.add(action)
+        if self.max_actions is not None:
+            return deduped[: int(self.max_actions)]
+        return deduped
+
+    def _action_label(self, state, action):
+        try:
+            return state.action_to_string(state.current_player(), int(action))
+        except Exception:
+            return str(int(action))
+
+
+class PreflopActionAbstractor(ActionAbstractor):
+    """
+    Lossless hand abstraction with a deliberately small preflop betting menu.
+
+    Targets are expressed in chips using the configured big blind. Each target
+    is mapped to the nearest legal OpenSpiel action, so the trainer never emits
+    an illegal action even when the full no-limit action space is large.
+    """
+
+    def __init__(self, big_blind=100, rng=None, max_actions=None):
+        super().__init__(
+            pot_fractions=(),
+            stack_fractions=(),
+            random_probe_count=0,
+            max_actions=max_actions,
+            rng=rng,
+        )
+        self.big_blind = int(big_blind)
+
+    def select_actions(self, state, legal_actions, parsed=None):
+        return [
+            int(action)
+            for action in self.select_action_specs(state, legal_actions, parsed=parsed)
+        ]
+
+    def select_action_specs(self, state, legal_actions, parsed=None):
+        parsed = parsed if parsed is not None else self._parse_state(state)
+        if int(parsed.get("Round", 0) or 0) != 0:
+            return [
+                DecisionAction(_action_key(action), int(action))
+                for action in super().select_actions(state, legal_actions, parsed=parsed)
+            ]
+
+        legal_actions = self._sorted_int_actions(legal_actions)
+        if not legal_actions:
+            return []
+
+        selected = []
+        used_action_ids = set()
+        raise_start = bisect_right(legal_actions, 1)
+        for action in legal_actions[:raise_start]:
+            label = self._preflop_base_label(state, action)
+            self._append_spec(selected, used_action_ids, label, action)
+
+        if raise_start < len(legal_actions):
+            self._append_spec(
+                selected, used_action_ids, "min_raise", legal_actions[raise_start]
+            )
+            for label, target in self._preflop_targets(parsed):
+                self._append_spec(
+                    selected,
+                    used_action_ids,
+                    label,
+                    self._nearest_action(target, legal_actions, start=raise_start),
+                )
+            self._append_spec(selected, used_action_ids, "jam", legal_actions[-1])
+
+        if self.max_actions is not None:
+            return selected[: int(self.max_actions)]
+        return selected
+
+    def _append_spec(self, selected, used_action_ids, label, action):
+        action = int(action)
+        if action in used_action_ids:
+            return
+        selected.append(DecisionAction(label, action))
+        used_action_ids.add(action)
+
+    def _preflop_base_label(self, state, action):
+        action = int(action)
+        if action == 0:
+            return "fold"
+        if action == 1:
+            return "call"
+        label = self._action_label(state, action).lower()
+        if "check" in label:
+            return "check"
+        return _action_key(action)
+
+    def _preflop_base_actions(self, state, legal_actions):
+        return [action for action in legal_actions if int(action) in (0, 1)]
+
+    def _preflop_raise_actions(self, legal_actions):
+        return [action for action in legal_actions if int(action) > 1]
+
+    def _preflop_targets(self, parsed):
+        effective_stack = self._effective_stack(parsed)
+        previous_raise = self._previous_raise_amount(parsed)
+        sequence = parsed.get("Sequences", "") or ""
+        prefix = "raise" if previous_raise > 0 or sequence else "open"
+
+        targets = [
+            (f"{prefix}_2_5bb", 2.5 * self.big_blind),
+            (f"{prefix}_3bb", 3.0 * self.big_blind),
+            ("raise_25eff", 0.25 * effective_stack),
+            ("raise_50eff", 0.50 * effective_stack),
+        ]
+        if previous_raise > 0:
+            targets.extend(
+                (
+                    ("raise_3x", 3.0 * previous_raise),
+                    ("raise_4x", 4.0 * previous_raise),
+                )
+            )
+        return [(label, target) for label, target in targets if target > 0]
+
+    def _previous_raise_amount(self, parsed):
+        sequence = parsed.get("Sequences", "") or ""
+        amount = ""
+        raises = []
+        for char in sequence:
+            if char == "r":
+                if amount:
+                    raises.append(int(amount))
+                    amount = ""
+            elif char.isdigit():
+                amount += char
+            elif amount:
+                raises.append(int(amount))
+                amount = ""
+        if amount:
+            raises.append(int(amount))
+        return raises[-1] if raises else 0
+
+
+class LinearMCCFRTrainer:
+    """
+    External-sampling MCCFR with linear update weights and negative-regret pruning.
+
+    This is still much smaller than Pluribus: it has no real-time subgame search,
+    continuation values, belief updates, or six-player-specific optimizations. It
+    does provide the core algorithmic pieces missing from the original prototype.
+    """
+
+    def __init__(
+        self,
+        game,
+        table=None,
+        infoset_fn=get_infostate,
+        prune_threshold=DEFAULT_PRUNE_THRESHOLD,
+        prune_probability=0.95,
+        prune_after=200,
+        regret_floor=DEFAULT_PRUNE_THRESHOLD - 10_000_000,
+        max_traverser_actions=None,
+        action_abstractor=None,
+        cutoff_street=None,
+        rng=None,
+    ):
+        self.game = game
+        self.table = table or StrategyTable()
+        self.infoset_fn = infoset_fn
+        self.prune_threshold = prune_threshold
+        self.prune_probability = prune_probability
+        self.prune_after = prune_after
+        self.regret_floor = regret_floor
+        self.max_traverser_actions = max_traverser_actions
+        self.rng = rng or np.random.default_rng()
+        if action_abstractor is None and max_traverser_actions is not None:
+            action_abstractor = ActionAbstractor(
+                random_probe_count=1,
+                max_actions=max_traverser_actions,
+                rng=self.rng,
+            )
+        elif action_abstractor is not None and action_abstractor.rng is None:
+            action_abstractor.rng = self.rng
+        self.action_abstractor = action_abstractor
+        self.cutoff_street = cutoff_street
+        self.iteration = 0
+
+    def train(
+        self,
+        iterations,
+        save_every=None,
+        save_path=None,
+        checkpointer=None,
+    ):
+        for _ in range(iterations):
+            self.iteration += 1
+            for player in range(self.game.num_players()):
+                state = self.game.new_initial_state()
+                self.mccfr(
+                    state,
+                    traverser=player,
+                    linear_weight=self.iteration,
+                    allow_pruning=self._should_prune_iteration(),
+                )
+
+            if save_every and save_path and self.iteration % save_every == 0:
+                save_table(self.table, save_path)
+                print(self.iteration)
+            if checkpointer:
+                checkpointer.maybe_save(self)
+
+        return self.table
+
+    def mccfr(
+        self,
+        state,
+        traverser,
+        linear_weight=1.0,
+        allow_pruning=False,
+        parsed=None,
+    ):
+        if state.is_terminal():
+            return float(state.returns()[traverser])
+
+        if state.is_chance_node():
+            new_state = state.clone()
+            outcomes_with_probs = new_state.chance_outcomes()
+            action_list, prob_list = zip(*outcomes_with_probs)
+            action = self.rng.choice(action_list, p=prob_list)
+            new_state.apply_action(int(action))
+            return self.mccfr(new_state, traverser, linear_weight, allow_pruning)
+
+        parsed = self._parsed_state(state) if parsed is None else parsed
+
+        if self._should_cutoff(state, parsed):
+            return self._cutoff_value(state, traverser)
+
+        current_player = state.current_player()
+        infoset = self._infoset(state, parsed)
+        legal_actions = self._decision_actions(
+            state, list(state.legal_actions()), parsed=parsed
+        )
+        strategy = self.table.regret_matching(infoset, legal_actions)
+
+        if current_player != traverser:
+            self.table.add_average_strategy(
+                infoset, legal_actions, strategy, linear_weight
+            )
+            action = self._sample_action(legal_actions, strategy)
+            new_state = state.clone()
+            new_state.apply_action(int(action))
+            return self.mccfr(new_state, traverser, linear_weight, allow_pruning)
+
+        traverser_actions = self._traverser_actions(
+            state, infoset, legal_actions, allow_pruning
+        )
+        if not traverser_actions:
+            traverser_actions = legal_actions
+
+        traverser_set = set(traverser_actions)
+        action_values = [None] * len(legal_actions)
+        node_value = 0.0
+        selected_strategy_mass = 0.0
+        for action, probability in zip(legal_actions, strategy):
+            if action in traverser_set:
+                selected_strategy_mass += probability
+
+        traverser_count = len(traverser_actions)
+        for index, action in enumerate(legal_actions):
+            if action not in traverser_set:
+                continue
+            new_state = state.clone()
+            new_state.apply_action(int(action))
+            action_value = self.mccfr(
+                new_state, traverser, linear_weight, allow_pruning
+            )
+            action_values[index] = action_value
+            if selected_strategy_mass > 0:
+                action_prob = strategy[index] / selected_strategy_mass
+            else:
+                action_prob = 1.0 / traverser_count
+            node_value += action_prob * action_value
+
+        self.table.add_average_strategy(
+            infoset, legal_actions, strategy, linear_weight
+        )
+
+        for index, action in enumerate(legal_actions):
+            action_value = action_values[index]
+            if action_value is None:
+                continue
+            regret_delta = linear_weight * (action_value - node_value)
+            self.table.add_regret(
+                infoset, action, regret_delta, floor=self.regret_floor
+            )
+
+        return node_value
+
+    def _should_prune_iteration(self):
+        return (
+            self.iteration >= self.prune_after
+            and self.rng.random() < self.prune_probability
+        )
+
+    def _traverser_actions(self, state, infoset, legal_actions, allow_pruning):
+        if not allow_pruning or self._is_final_betting_round(state):
+            return legal_actions
+
+        node = self.table.ensure_infoset(infoset, legal_actions)
+        kept = []
+        for action in legal_actions:
+            if self._action_reaches_terminal(state, action):
+                kept.append(action)
+                continue
+            regret = float(node["regret"][_action_key(action)])
+            if regret >= self.prune_threshold:
+                kept.append(action)
+        return kept
+
+    def _decision_actions(self, state, actions, parsed=None):
+        if self.action_abstractor is None:
+            return actions
+        if hasattr(self.action_abstractor, "select_action_specs"):
+            try:
+                selected = self.action_abstractor.select_action_specs(
+                    state, actions, parsed=parsed
+                )
+            except TypeError:
+                selected = self.action_abstractor.select_action_specs(state, actions)
+        else:
+            try:
+                selected = self.action_abstractor.select_actions(
+                    state, actions, parsed=parsed
+                )
+            except TypeError:
+                selected = self.action_abstractor.select_actions(state, actions)
+        selected = selected or actions
+        return selected
+
+    def _sample_action(self, actions, probs):
+        threshold = float(self.rng.random())
+        cumulative = 0.0
+        for action, prob in zip(actions, probs):
+            cumulative += float(prob)
+            if cumulative >= threshold:
+                return action
+        return actions[-1]
+
+    def _should_cutoff(self, state, parsed=None):
+        if self.cutoff_street != "preflop":
+            return False
+        try:
+            parsed = self._parsed_state(state) if parsed is None else parsed
+            return bool(parsed.get("Public")) or int(parsed.get("Round", 0) or 0) > 0
+        except Exception:
+            return False
+
+    def _cutoff_value(self, state, traverser):
+        try:
+            parsed = self._parse_player_state(state, traverser)
+            money = parsed.get("Money") or []
+            pot = float(parsed.get("Pot", 0) or 0)
+            private_cards = parsed.get("Private") or []
+            if traverser >= len(money) or len(private_cards) != 2:
+                return 0.0
+            starting_stack = (sum(float(stack) for stack in money) + pot) / len(money)
+            contribution = max(0.0, starting_stack - float(money[traverser]))
+            equity = preflop_hand_strength(private_cards)
+            return equity * pot - contribution
+        except Exception:
+            return 0.0
+
+    def _parse_player_state(self, state, player):
+        try:
+            return parse_poker_string(state.information_state_string(int(player)))
+        except TypeError:
+            return parse_poker_string(state.information_state_string())
+
+    def _parsed_state(self, state):
+        try:
+            return parse_poker_string(state.information_state_string())
+        except Exception:
+            return {}
+
+    def _infoset(self, state, parsed):
+        if self.infoset_fn is get_infostate:
+            try:
+                return _infoset_from_parsed(parsed)
+            except Exception:
+                pass
+        return self.infoset_fn(state)
+
+    def _is_final_betting_round(self, state):
+        try:
+            parsed = parse_poker_string(state.information_state_string())
+            return int(parsed.get("Round", 0)) >= int(game_config["numRounds"]) - 1
+        except Exception:
+            return False
+
+    def _action_reaches_terminal(self, state, action):
+        new_state = state.clone()
+        new_state.apply_action(int(action))
+        return new_state.is_terminal()
+
+
+def save_table(table, path=None):
+    path = path or _default_path("mccfr_table.json")
+    if str(path).endswith(".gz"):
+        open_fn = lambda filename, mode: gzip.open(filename, mode, compresslevel=1)
+    else:
+        open_fn = open
+    with open_fn(path, "wt") as out_file:
+        json.dump(table.data, out_file)
+
+
+def load_table(path=None):
+    path = path or _default_path("mccfr_table.json")
+    open_fn = gzip.open if str(path).endswith(".gz") else open
+    with open_fn(path, "rt") as in_file:
+        return StrategyTable(json.load(in_file))
+
+
+def save_strategy(strategy, path=None):
+    path = path or _default_path("blackjack.txt")
+    with open(path, "w") as out_file:
+        json.dump(strategy, out_file)
+
+
+def load_strategy(path=None):
+    path = path or _default_path("blackjack.txt")
+    with open(path, "r") as in_file:
+        return json.load(in_file)
+
+
+def export_average_strategy(table, path=None):
+    strategy = table.average_strategy()
+    save_strategy(strategy, path)
+    return strategy
+
+
+def selfplay(iterations=100_000, save_every=10_000):
+    import pyspiel
 
     game = pyspiel.load_game("universal_poker", game_config)
+    trainer = LinearMCCFRTrainer(game)
+    table_path = _default_path("mccfr_table.json")
+    trainer.train(iterations, save_every=save_every, save_path=table_path)
+    export_average_strategy(trainer.table)
+    return trainer.table
 
-    for i in range(100000000):
-        state = game.new_initial_state()
-        MCCFR(state, 0, strategy, regrets)
 
-        state = game.new_initial_state()
-        MCCFR(state, 1, strategy, regrets)
+def _default_path(filename):
+    return os.path.join(os.path.dirname(os.path.realpath(__file__)), filename)
 
-        if i % 100000 == 0:
-            save_strategy(strategy)
-            print(i)
-    return strategy
 
 if __name__ == "__main__":
     selfplay()
-
-
-
-def average(): #what is this supposed to do?
-    one = load_strategy()
-    two = load_strategy()
-    final = {}
-
-    for i in one:
-        final[i] = one[i] + (0.3) * two[i] / 2
-    save_strategy(final)

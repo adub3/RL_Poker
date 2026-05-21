@@ -147,7 +147,7 @@ class Player(Bot):
             # print(legal_actions, legal_action_indices)
         
             policy = self.strategy[self.state]
-            policy_list = [policy[i] for i in legal_action_indices]
+            policy_list = [lookup_action_probability(policy, i) for i in legal_action_indices]
             if(sum(policy_list) == 0):
                 policy_list = [1 / len(legal_action_indices) for _ in legal_action_indices]
             else:
@@ -199,6 +199,11 @@ def load_strategy():
     path = os.path.dirname(os.path.realpath(__file__))
     set = json.load(open(f"{path}/blackjack.txt", 'r'))
     return set
+
+def lookup_action_probability(policy, action_index):
+    if isinstance(policy, dict):
+        return policy.get(str(action_index), 0)
+    return policy[action_index]
 
 if __name__ == '__main__':
 
