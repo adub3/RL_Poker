@@ -11,3 +11,5 @@ eval/
 *.pid
 new_code/blackjack_smoke.txt
 new_code/mccfr_table_smoke.json
+plots/
+*.npy

@@ -12,6 +12,7 @@ from abstraction import (
     abstractbetting,
     abstractioncards_street_aware,
     parse_poker_string,
+    postflop_betting_context,
     preflop_betting_context,
 )
 from const import game_config
@@ -35,6 +36,8 @@ RANK_VALUE_BY_CARD = {
     "K": 13,
     "A": 14,
 }
+_ACTION_KEY_CACHE: dict = {}
+
 ACTION_BUCKETS = (
     "fold",
     "call/check",
@@ -48,12 +51,19 @@ ACTION_BUCKETS = (
     "raise_25eff",
     "raise_50eff",
     "jam",
+    # postflop pot-fraction bets
+    "bet_33",
+    "bet_50",
+    "bet_pot",
+    "bet_2x",
+    # numeric fallbacks
     "<500",
     "500-999",
     "1k-4.9k",
     "5k-9.9k",
     "10k-19.9k",
     "20k+",
+    "other",
 )
 
 
@@ -71,7 +81,12 @@ def _action_key(action):
         return action.key
     if isinstance(action, str):
         return action
-    return sys.intern(str(int(action)))
+    n = int(action)
+    cached = _ACTION_KEY_CACHE.get(n)
+    if cached is None:
+        cached = sys.intern(str(n))
+        _ACTION_KEY_CACHE[n] = cached
+    return cached
 
 
 def _action_keys(actions):
@@ -83,31 +98,41 @@ def _infoset_from_parsed(parsed):
     if not parsed.get("Public"):
         context = preflop_betting_context(parsed)
     else:
-        context = abstractbetting(parsed)
+        context = postflop_betting_context(parsed)
     return sys.intern(cards + context)
+
+
+_LABEL_BUCKETS = {
+    "fold": "fold",
+    "call": "call/check",
+    "check": "call/check",
+    "call_check": "call/check",
+    "min_raise": "min_raise",
+    "open_2_5bb": "open_2_5bb",
+    "open_3bb": "open_3bb",
+    "raise_2_5bb": "raise_2_5bb",
+    "raise_3bb": "raise_3bb",
+    "raise_3x": "raise_3x",
+    "raise_4x": "raise_4x",
+    "raise_25eff": "raise_25eff",
+    "raise_50eff": "raise_50eff",
+    "jam": "jam",
+    # postflop pot-fraction bets
+    "bet_33": "bet_33",
+    "bet_50": "bet_50",
+    "bet_pot": "bet_pot",
+    "bet_2x": "bet_2x",
+}
 
 
 def action_bucket(action):
     key = _action_key(action)
-    label_buckets = {
-        "fold": "fold",
-        "call": "call/check",
-        "check": "call/check",
-        "call_check": "call/check",
-        "min_raise": "min_raise",
-        "open_2_5bb": "open_2_5bb",
-        "open_3bb": "open_3bb",
-        "raise_2_5bb": "raise_2_5bb",
-        "raise_3bb": "raise_3bb",
-        "raise_3x": "raise_3x",
-        "raise_4x": "raise_4x",
-        "raise_25eff": "raise_25eff",
-        "raise_50eff": "raise_50eff",
-        "jam": "jam",
-    }
-    if key in label_buckets:
-        return label_buckets[key]
-    action = int(action)
+    if key in _LABEL_BUCKETS:
+        return _LABEL_BUCKETS[key]
+    try:
+        action = int(action)
+    except (ValueError, TypeError):
+        return "other"
     if action == 0:
         return "fold"
     if action == 1:
@@ -224,6 +249,18 @@ class StrategyTable:
         if floor is not None:
             updated = max(floor, updated)
         node["regret"][key] = updated
+
+    def batch_add_regret(self, infoset, action_keys, deltas, floor=None):
+        node = self.data.get(infoset)
+        if node is None:
+            return
+        regret = node["regret"]
+        if floor is not None:
+            for key, delta in zip(action_keys, deltas):
+                regret[key] = max(floor, float(regret[key]) + delta)
+        else:
+            for key, delta in zip(action_keys, deltas):
+                regret[key] = float(regret[key]) + delta
 
     def add_average_strategy(self, infoset, legal_actions, probs, weight):
         action_keys = _action_keys(legal_actions)
@@ -382,6 +419,58 @@ class TrainingCheckpointer:
             if write_header:
                 writer.writeheader()
             writer.writerow(metrics)
+
+
+def _raise_range_from_seq(seq_str, big_blind, max_raise, no_bet_baseline=0):
+    """Parse a single-street sequence string → (min_raise, max_raise, last_top).
+
+    seq_str should contain only the current street (no '|' separators).
+    max_raise is passed in (starting_stack for preflop, money[player] for postflop).
+    no_bet_baseline: the virtual 'previous raise' when no raises yet appear in seq
+    (big_blind for preflop because of the forced BB; 0 for postflop).
+    """
+    raise_amounts = []
+    amt = ""
+    for ch in seq_str:
+        if ch == "r":
+            amt = ""
+        elif ch.isdigit():
+            amt += ch
+        elif amt:
+            raise_amounts.append(int(amt))
+            amt = ""
+    if amt:
+        raise_amounts.append(int(amt))
+
+    if not raise_amounts:
+        last_top, prev_top = no_bet_baseline, 0
+    elif len(raise_amounts) == 1:
+        last_top, prev_top = raise_amounts[0], no_bet_baseline
+    else:
+        last_top, prev_top = raise_amounts[-1], raise_amounts[-2]
+
+    min_raise = last_top + (last_top - prev_top)
+    min_raise = max(big_blind, min(min_raise, max_raise))
+    return min_raise, max_raise, last_top
+
+
+def _preflop_raise_range(parsed, big_blind, starting_stack=0):
+    """Return (min_raise, max_raise, last_top) for the preflop street.
+
+    In universal_poker fullgame, action ID N = total chips committed this street
+    by the current player. max_raise = starting_stack (all-in = full initial stack,
+    not remaining chips). min_raise uses the standard NLHE rule:
+    last_top + (last_top - prev_top), with big_blind as the forced-blind baseline.
+    """
+    money = parsed.get("Money") or []
+    player = int(parsed.get("Player", 0) or 0)
+    sequence = parsed.get("Sequences", "") or ""
+    max_raise = starting_stack if starting_stack > 0 else (
+        int(money[player]) if len(money) > player else 0
+    )
+    return _raise_range_from_seq(sequence, big_blind, max_raise, no_bet_baseline=big_blind)
+
+
 
 
 class ActionAbstractor:
@@ -595,7 +684,7 @@ class PreflopActionAbstractor(ActionAbstractor):
     an illegal action even when the full no-limit action space is large.
     """
 
-    def __init__(self, big_blind=100, rng=None, max_actions=None):
+    def __init__(self, big_blind=100, rng=None, max_actions=None, starting_stack=0):
         super().__init__(
             pot_fractions=(),
             stack_fractions=(),
@@ -604,6 +693,7 @@ class PreflopActionAbstractor(ActionAbstractor):
             rng=rng,
         )
         self.big_blind = int(big_blind)
+        self.starting_stack = int(starting_stack)
 
     def select_actions(self, state, legal_actions, parsed=None):
         return [
@@ -694,21 +784,116 @@ class PreflopActionAbstractor(ActionAbstractor):
 
     def _previous_raise_amount(self, parsed):
         sequence = parsed.get("Sequences", "") or ""
+        last_raise = 0
         amount = ""
-        raises = []
         for char in sequence:
             if char == "r":
-                if amount:
-                    raises.append(int(amount))
-                    amount = ""
+                amount = ""
             elif char.isdigit():
                 amount += char
             elif amount:
-                raises.append(int(amount))
+                last_raise = int(amount)
                 amount = ""
         if amount:
-            raises.append(int(amount))
-        return raises[-1] if raises else 0
+            last_raise = int(amount)
+        return last_raise
+
+    def select_action_specs_direct(self, parsed):
+        """Compute action specs without calling state.legal_actions().
+
+        Dispatches to preflop or postflop helper based on the Round field.
+        Raise amounts are concrete chip totals clamped to [min_raise, max_raise],
+        derived from the parsed info string alone.
+        """
+        if int(parsed.get("Round", 0) or 0) == 0:
+            return self._preflop_specs_direct(parsed)
+        return self._postflop_specs_direct(parsed)
+
+    def _preflop_specs_direct(self, parsed):
+        money = parsed.get("Money") or []
+        player = int(parsed.get("Player", 0) or 0)
+        to_call = (
+            max(0, int(money[player]) - int(money[1 - player]))
+            if len(money) >= 2
+            else 0
+        )
+        min_raise, max_raise, last_top = _preflop_raise_range(
+            parsed, self.big_blind, self.starting_stack
+        )
+        has_raises = max_raise > last_top
+
+        specs = []
+        seen = set()
+        if to_call > 0:
+            specs.append(DecisionAction("fold", 0))
+            seen.add(0)
+        specs.append(DecisionAction("call", 1))
+        seen.add(1)
+
+        if has_raises:
+            specs.append(DecisionAction("min_raise", min_raise))
+            seen.add(min_raise)
+            for label, target in self._preflop_targets(parsed):
+                amount = max(min_raise, min(max_raise, int(round(target))))
+                if amount not in seen:
+                    specs.append(DecisionAction(label, amount))
+                    seen.add(amount)
+            if max_raise not in seen:
+                specs.append(DecisionAction("jam", max_raise))
+
+        if self.max_actions is not None:
+            return specs[: self.max_actions]
+        return specs
+
+    def _postflop_specs_direct(self, parsed):
+        # Postflop action_ids are CUMULATIVE across all streets (same encoding as preflop).
+        # Use _preflop_raise_range (full Sequences + starting_stack) — it is correct for all streets.
+        money = parsed.get("Money") or []
+        player = int(parsed.get("Player", 0) or 0)
+        to_call = (
+            max(0, int(money[player]) - int(money[1 - player]))
+            if len(money) >= 2
+            else 0
+        )
+        min_raise, max_raise, last_top = _preflop_raise_range(
+            parsed, self.big_blind, self.starting_stack
+        )
+        has_raises = max_raise > last_top
+
+        pot = int(parsed.get("Pot", 0) or 0)
+
+        specs = []
+        seen = set()
+        if to_call > 0:
+            specs.append(DecisionAction("fold", 0))
+            seen.add(0)
+        specs.append(DecisionAction("call", 1))
+        seen.add(1)
+
+        if has_raises:
+            specs.append(DecisionAction("min_raise", min_raise))
+            seen.add(min_raise)
+
+            targets = []
+            if pot > 0:
+                targets = [
+                    ("bet_33", int(round(pot * 0.33))),
+                    ("bet_50", int(round(pot * 0.50))),
+                    ("bet_pot", pot),
+                    ("bet_2x", pot * 2),
+                ]
+            for label, target in targets:
+                amount = max(min_raise, min(max_raise, target))
+                if amount not in seen:
+                    specs.append(DecisionAction(label, amount))
+                    seen.add(amount)
+
+            if max_raise not in seen:
+                specs.append(DecisionAction("jam", max_raise))
+
+        if self.max_actions is not None:
+            return specs[: self.max_actions]
+        return specs
 
 
 class LinearMCCFRTrainer:
@@ -732,6 +917,7 @@ class LinearMCCFRTrainer:
         max_traverser_actions=None,
         action_abstractor=None,
         cutoff_street=None,
+        start_iteration=0,
         rng=None,
     ):
         self.game = game
@@ -753,6 +939,7 @@ class LinearMCCFRTrainer:
             action_abstractor.rng = self.rng
         self.action_abstractor = action_abstractor
         self.cutoff_street = cutoff_street
+        self.start_iteration = int(start_iteration)
         self.iteration = 0
 
     def train(
@@ -764,12 +951,16 @@ class LinearMCCFRTrainer:
     ):
         for _ in range(iterations):
             self.iteration += 1
+            # Flat weight for first 100 effective iterations, then linear.
+            # start_iteration shifts the ramp so resumed runs continue smoothly.
+            effective = self.iteration + self.start_iteration
+            linear_weight = max(1, effective - 99)
             for player in range(self.game.num_players()):
                 state = self.game.new_initial_state()
                 self.mccfr(
                     state,
                     traverser=player,
-                    linear_weight=self.iteration,
+                    linear_weight=linear_weight,
                     allow_pruning=self._should_prune_iteration(),
                 )
 
@@ -793,23 +984,28 @@ class LinearMCCFRTrainer:
             return float(state.returns()[traverser])
 
         if state.is_chance_node():
-            new_state = state.clone()
-            outcomes_with_probs = new_state.chance_outcomes()
+            outcomes_with_probs = state.chance_outcomes()
             action_list, prob_list = zip(*outcomes_with_probs)
             action = self.rng.choice(action_list, p=prob_list)
-            new_state.apply_action(int(action))
-            return self.mccfr(new_state, traverser, linear_weight, allow_pruning)
+            state.apply_action(int(action))
+            return self.mccfr(state, traverser, linear_weight, allow_pruning)
 
         parsed = self._parsed_state(state) if parsed is None else parsed
 
         if self._should_cutoff(state, parsed):
-            return self._cutoff_value(state, traverser)
+            return self._cutoff_value(state, traverser, parsed=parsed)
 
         current_player = state.current_player()
         infoset = self._infoset(state, parsed)
-        legal_actions = self._decision_actions(
-            state, list(state.legal_actions()), parsed=parsed
-        )
+        if (
+            self.action_abstractor is not None
+            and hasattr(self.action_abstractor, "select_action_specs_direct")
+        ):
+            legal_actions = self.action_abstractor.select_action_specs_direct(parsed)
+        else:
+            legal_actions = self._decision_actions(
+                state, list(state.legal_actions()), parsed=parsed
+            )
         strategy = self.table.regret_matching(infoset, legal_actions)
 
         if current_player != traverser:
@@ -817,12 +1013,11 @@ class LinearMCCFRTrainer:
                 infoset, legal_actions, strategy, linear_weight
             )
             action = self._sample_action(legal_actions, strategy)
-            new_state = state.clone()
-            new_state.apply_action(int(action))
-            return self.mccfr(new_state, traverser, linear_weight, allow_pruning)
+            state.apply_action(int(action))
+            return self.mccfr(state, traverser, linear_weight, allow_pruning)
 
         traverser_actions = self._traverser_actions(
-            state, infoset, legal_actions, allow_pruning
+            state, infoset, legal_actions, allow_pruning, parsed=parsed
         )
         if not traverser_actions:
             traverser_actions = legal_actions
@@ -855,14 +1050,16 @@ class LinearMCCFRTrainer:
             infoset, legal_actions, strategy, linear_weight
         )
 
+        action_keys = _action_keys(legal_actions)
+        deltas = []
+        batch_keys = []
         for index, action in enumerate(legal_actions):
             action_value = action_values[index]
             if action_value is None:
                 continue
-            regret_delta = linear_weight * (action_value - node_value)
-            self.table.add_regret(
-                infoset, action, regret_delta, floor=self.regret_floor
-            )
+            batch_keys.append(action_keys[index])
+            deltas.append(linear_weight * (action_value - node_value))
+        self.table.batch_add_regret(infoset, batch_keys, deltas, floor=self.regret_floor)
 
         return node_value
 
@@ -872,8 +1069,8 @@ class LinearMCCFRTrainer:
             and self.rng.random() < self.prune_probability
         )
 
-    def _traverser_actions(self, state, infoset, legal_actions, allow_pruning):
-        if not allow_pruning or self._is_final_betting_round(state):
+    def _traverser_actions(self, state, infoset, legal_actions, allow_pruning, parsed=None):
+        if not allow_pruning or self._is_final_betting_round(state, parsed=parsed):
             return legal_actions
 
         node = self.table.ensure_infoset(infoset, legal_actions)
@@ -925,9 +1122,10 @@ class LinearMCCFRTrainer:
         except Exception:
             return False
 
-    def _cutoff_value(self, state, traverser):
+    def _cutoff_value(self, state, traverser, parsed=None):
         try:
-            parsed = self._parse_player_state(state, traverser)
+            if parsed is None:
+                parsed = self._parse_player_state(state, traverser)
             money = parsed.get("Money") or []
             pot = float(parsed.get("Pot", 0) or 0)
             private_cards = parsed.get("Private") or []
@@ -960,9 +1158,10 @@ class LinearMCCFRTrainer:
                 pass
         return self.infoset_fn(state)
 
-    def _is_final_betting_round(self, state):
+    def _is_final_betting_round(self, state, parsed=None):
         try:
-            parsed = parse_poker_string(state.information_state_string())
+            if parsed is None:
+                parsed = parse_poker_string(state.information_state_string())
             return int(parsed.get("Round", 0)) >= int(game_config["numRounds"]) - 1
         except Exception:
             return False

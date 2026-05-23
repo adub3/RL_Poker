@@ -1,9 +1,14 @@
 import argparse
 import csv
+import ctypes as _ctypes
+import gc
+import gzip
 import json
 import math
 import os
+import pickle as _pickle
 import queue
+import re
 import sys
 import time
 from datetime import datetime, timezone
@@ -21,12 +26,29 @@ from ai import (  # noqa: E402
     LinearMCCFRTrainer,
     PreflopActionAbstractor,
     StrategyTable,
-    merge_strategy_tables,
+    load_table,
     save_table,
     table_metrics,
 )
 from const import game_config  # noqa: E402
 from preflop import preflop_coverage_metrics  # noqa: E402
+
+
+def _save_snapshot(table, path):
+    with gzip.open(path, "wb", compresslevel=1) as f:
+        _pickle.dump(table.data, f, protocol=4)
+
+
+def _load_snapshot(path):
+    with gzip.open(path, "rb") as f:
+        return StrategyTable(_pickle.load(f))
+
+
+def _malloc_trim():
+    try:
+        _ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except Exception:
+        pass
 
 
 def default_worker_count():
@@ -50,6 +72,47 @@ def game_config_for_stack(stack_bb):
     return config, big_blind
 
 
+def merge_table_into(target, source):
+    source_data = source.data if isinstance(source, StrategyTable) else source
+    for infoset, node in source_data.items():
+        target_node = target.data.setdefault(
+            infoset,
+            {"regret": {}, "strategy": {}, "strategy_sum": {}, "visits": 0},
+        )
+        target_node["visits"] += int(node.get("visits", 0))
+        for field in ("regret", "strategy_sum"):
+            target_field = target_node[field]
+            for action, value in node.get(field, {}).items():
+                key = str(action)
+                target_field[key] = float(target_field.get(key, 0.0)) + float(value)
+                target_node["strategy"].setdefault(key, 0.0)
+        for action, value in node.get("strategy", {}).items():
+            target_node["strategy"].setdefault(str(action), float(value))
+
+
+def finalize_table_strategy(table):
+    for node in table.data.values():
+        actions = sorted(node["strategy"].keys())
+        total_strategy = sum(
+            float(node["strategy_sum"].get(action, 0.0)) for action in actions
+        )
+        if total_strategy > 0:
+            for action in actions:
+                node["strategy"][action] = (
+                    float(node["strategy_sum"].get(action, 0.0)) / total_strategy
+                )
+            continue
+
+        regrets = [max(0.0, float(node["regret"].get(action, 0.0))) for action in actions]
+        normalizer = sum(regrets)
+        if not actions:
+            continue
+        for action, regret in zip(actions, regrets):
+            node["strategy"][action] = (
+                regret / normalizer if normalizer > 0 else 1.0 / len(actions)
+            )
+
+
 def write_run_manifest(output_dir, args):
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -69,6 +132,7 @@ def write_run_manifest(output_dir, args):
         "max_actions": args.max_actions,
         "cutoff_street": args.cutoff_street,
         "seed": args.seed,
+        "start_iteration": args.start_iteration,
         "stack_bb": args.stack_bb,
         "big_blind": big_blind,
         "game_config": config,
@@ -116,8 +180,10 @@ def train_worker(worker_id, args, result_queue):
         config, big_blind = game_config_for_stack(args.stack_bb)
         rng = np.random.default_rng(int(args.seed) + worker_id * 1_000_003)
         game = pyspiel.load_game("universal_poker", config)
+        starting_stack = int(args.stack_bb) * big_blind
         abstractor = PreflopActionAbstractor(
             big_blind=big_blind,
+            starting_stack=starting_stack,
             rng=rng,
             max_actions=args.max_actions,
         )
@@ -128,12 +194,16 @@ def train_worker(worker_id, args, result_queue):
             prune_after=args.prune_after,
             prune_probability=args.prune_probability,
             prune_threshold=args.prune_threshold,
+            regret_floor=args.prune_threshold - 10_000_000,
             cutoff_street=args.cutoff_street,
+            start_iteration=getattr(args, "start_iteration", 0),
             rng=rng,
         )
 
         remaining = int(args.iterations_per_worker)
         stage = 0
+        snapshot_dir = Path(args.output_dir) / "_worker_snapshots"
+        snapshot_dir.mkdir(parents=True, exist_ok=True)
         while remaining > 0:
             stage += 1
             chunk = min(int(args.merge_every), remaining)
@@ -144,6 +214,12 @@ def train_worker(worker_id, args, result_queue):
             remaining -= chunk
             local_iterations_delta = trainer.iteration - before_iteration
             infosets = len(trainer.table.data)
+            snapshot_path = (
+                snapshot_dir
+                / f"worker_{worker_id:03d}_stage_{stage:06d}_iter_"
+                  f"{trainer.iteration:08d}.pkl.gz"
+            )
+            _save_snapshot(trainer.table, snapshot_path)
             result_queue.put(
                 {
                     "type": "snapshot",
@@ -161,7 +237,7 @@ def train_worker(worker_id, args, result_queue):
                     "worker_infosets_per_second": (
                         infosets / train_seconds if train_seconds > 0 else 0.0
                     ),
-                    "table": trainer.table.data,
+                    "snapshot_path": str(snapshot_path),
                 }
             )
 
@@ -189,16 +265,30 @@ def append_metrics(metrics_path, metrics):
         writer.writerow(metrics)
 
 
-def write_stage(output_dir, stage, snapshots, save_checkpoint=True):
+def write_stage(
+    output_dir,
+    stage,
+    snapshots_meta,
+    merged_workers_table,
+    base_table=None,
+    save_checkpoint=True,
+    start_iteration=0,
+):
+    # merged_workers_table is already the incremental sum of all worker snapshots.
+    # base_table (if present) is merged in-place to avoid allocating a third full copy.
     stage_start = time.perf_counter()
     merge_start = time.perf_counter()
-    merged = merge_strategy_tables(StrategyTable(snapshot["table"]) for snapshot in snapshots)
+    if base_table is not None:
+        merge_table_into(merged_workers_table, base_table)
+    finalize_table_strategy(merged_workers_table)
+    merged = merged_workers_table
     merge_seconds = time.perf_counter() - merge_start
-    merged_iteration = sum(int(snapshot["local_iterations"]) for snapshot in snapshots)
+    merged_iteration = sum(int(s["local_iterations"]) for s in snapshots_meta)
+    effective_iteration = int(start_iteration) + merged_iteration
     checkpoint_path = None
     checkpoint_save_seconds = 0.0
     if save_checkpoint:
-        checkpoint_path = output_dir / f"mccfr_table_iter_{merged_iteration:08d}.json.gz"
+        checkpoint_path = output_dir / f"mccfr_table_iter_{effective_iteration:08d}.json.gz"
         checkpoint_start = time.perf_counter()
         save_table(merged, checkpoint_path)
         checkpoint_save_seconds = time.perf_counter() - checkpoint_start
@@ -209,22 +299,33 @@ def write_stage(output_dir, stage, snapshots, save_checkpoint=True):
     metrics_seconds = time.perf_counter() - metrics_start
 
     worker_train_seconds = [
-        float(snapshot.get("worker_train_seconds", 0.0)) for snapshot in snapshots
+        float(s.get("worker_train_seconds", 0.0)) for s in snapshots_meta
     ]
     worker_iterations_per_second = [
-        float(snapshot.get("worker_iterations_per_second", 0.0))
-        for snapshot in snapshots
+        float(s.get("worker_iterations_per_second", 0.0))
+        for s in snapshots_meta
     ]
     worker_infosets_per_second = [
-        float(snapshot.get("worker_infosets_per_second", 0.0))
-        for snapshot in snapshots
+        float(s.get("worker_infosets_per_second", 0.0))
+        for s in snapshots_meta
     ]
+    stage_iterations_delta = sum(
+        int(s.get("local_iterations_delta", 0)) for s in snapshots_meta
+    )
+    worker_train_seconds_max = (
+        max(worker_train_seconds) if worker_train_seconds else 0.0
+    )
     metrics["stage"] = stage
     metrics["iteration"] = merged_iteration
-    metrics["workers"] = len(snapshots)
+    metrics["effective_iteration"] = effective_iteration
+    metrics["workers"] = len(snapshots_meta)
+    metrics["stage_iterations_delta"] = stage_iterations_delta
     metrics["worker_train_seconds_sum"] = sum(worker_train_seconds)
-    metrics["worker_train_seconds_max"] = (
-        max(worker_train_seconds) if worker_train_seconds else 0.0
+    metrics["worker_train_seconds_max"] = worker_train_seconds_max
+    metrics["effective_worker_iterations_per_second"] = (
+        stage_iterations_delta / worker_train_seconds_max
+        if worker_train_seconds_max > 0
+        else 0.0
     )
     metrics["worker_iterations_per_second_sum"] = sum(worker_iterations_per_second)
     metrics["worker_iterations_per_second_mean"] = (
@@ -246,11 +347,15 @@ def write_stage(output_dir, stage, snapshots, save_checkpoint=True):
     return checkpoint_path, metrics
 
 
-def run(args):
+def run(args, resume_from_path=None):
     run_start = time.perf_counter()
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     write_run_manifest(output_dir, args)
+    snapshot_dir = output_dir / "_worker_snapshots"
+    snapshot_dir.mkdir(parents=True, exist_ok=True)
+    for stale_snapshot in snapshot_dir.glob("worker_*_stage_*.pkl.gz"):
+        stale_snapshot.unlink()
 
     stages = int(math.ceil(args.iterations_per_worker / args.merge_every))
     context = multiprocessing_context()
@@ -262,7 +367,17 @@ def run(args):
     for worker in workers:
         worker.start()
 
-    snapshots_by_stage = {}
+    # Load base_table AFTER forking so workers don't inherit its COW pages.
+    base_table = None
+    if resume_from_path:
+        base_table = load_table(resume_from_path)
+        print(f"base_table loaded post-fork: {len(base_table.data)} infosets")
+
+    # One StrategyTable accumulator per in-flight stage. Workers write snapshots
+    # to disk and queue only the path so multiprocessing never pickles a full
+    # table in a feeder thread while training continues.
+    stage_tables = {}  # stage -> StrategyTable accumulator
+    stage_meta = {}    # stage -> list of snapshot metadata
     done = 0
     while done < args.workers:
         try:
@@ -279,20 +394,39 @@ def run(args):
             continue
 
         stage = int(message["stage"])
-        snapshots_by_stage.setdefault(stage, []).append(message)
-        if len(snapshots_by_stage[stage]) == args.workers:
+        snapshot_path = Path(message.pop("snapshot_path"))
+        snapshot_table = _load_snapshot(snapshot_path)
+        snapshot_path.unlink(missing_ok=True)
+        if stage not in stage_tables:
+            stage_tables[stage] = StrategyTable()
+            stage_meta[stage] = []
+        merge_table_into(stage_tables[stage], snapshot_table)
+        del snapshot_table
+        stage_meta[stage].append(message)
+
+        if len(stage_meta[stage]) == args.workers:
+            merged_workers_table = stage_tables.pop(stage)
+            snapshots_meta = stage_meta.pop(stage)
             checkpoint_path, metrics = write_stage(
                 output_dir,
                 stage,
-                snapshots_by_stage.pop(stage),
+                snapshots_meta,
+                merged_workers_table,
+                base_table=base_table,
                 save_checkpoint=(
                     stage % args.checkpoint_every == 0 or stage == stages
                 ),
+                start_iteration=args.start_iteration,
             )
+            del merged_workers_table
+            gc.collect()
+            _malloc_trim()
             checkpoint_label = str(checkpoint_path) if checkpoint_path else "metrics-only"
             print(
-                f"stage={stage}/{stages} iteration={metrics['iteration']} "
-                f"infosets={metrics['infosets']} checkpoint={checkpoint_label}"
+                f"stage={stage}/{stages} iteration={metrics['effective_iteration']} "
+                f"infosets={metrics['infosets']} "
+                f"iter_per_sec={metrics['effective_worker_iterations_per_second']:.2f} "
+                f"checkpoint={checkpoint_label}"
             )
 
     for worker in workers:
@@ -320,7 +454,7 @@ def main():
         default=1,
         help="Write a full checkpoint every N merge stages. Metrics still write every stage.",
     )
-    parser.add_argument("--output-dir", default="checkpoints/preflop_100bb")
+    parser.add_argument("--output-dir", default="auto")
     parser.add_argument(
         "--smoke-benchmark",
         action="store_true",
@@ -351,17 +485,36 @@ def main():
             "hand-strength value estimate instead of traversing postflop."
         ),
     )
+    parser.add_argument(
+        "--resume-from",
+        default=None,
+        metavar="CHECKPOINT",
+        help="Path to a prior .json.gz checkpoint. Workers start fresh but the "
+             "base table is merged into every subsequent checkpoint.",
+    )
+    parser.add_argument(
+        "--start-iteration",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Effective iteration offset for linear weighting on resume. "
+             "Auto-detected from the checkpoint filename when --resume-from is used.",
+    )
     args = parser.parse_args()
     if args.smoke_benchmark:
-        default_output_dir = parser.get_default("output_dir")
         args.workers = 2
         args.iterations_per_worker = 8
         args.merge_every = 8
         args.checkpoint_every = 1
-        if args.output_dir == default_output_dir:
-            args.output_dir = "checkpoints/preflop_smoke_benchmark"
+        if args.output_dir == "auto":
+            args.output_dir = "checkpoints/smoke_benchmark"
     if args.cutoff_street == "none":
         args.cutoff_street = None
+
+    # Auto output directory derived from run type and stack size.
+    if args.output_dir == "auto":
+        label = "preflop" if args.cutoff_street == "preflop" else "fullgame"
+        args.output_dir = f"checkpoints/{label}_{args.stack_bb}bb"
 
     if args.workers < 1:
         raise ValueError("--workers must be at least 1")
@@ -378,7 +531,18 @@ def main():
     if args.max_actions is not None and args.max_actions < 2:
         raise ValueError("--max-actions must be at least 2 when provided")
 
-    summary = run(args)
+    # Resume: detect start_iteration from filename now (before workers fork),
+    # but defer the actual table load until after forking inside run().
+    if args.resume_from:
+        if args.start_iteration is None:
+            m = re.search(r"iter_(\d+)", str(args.resume_from))
+            args.start_iteration = int(m.group(1)) if m else 0
+        print(f"Resuming from {args.resume_from}, start_iteration={args.start_iteration}")
+    else:
+        if args.start_iteration is None:
+            args.start_iteration = 0
+
+    summary = run(args, resume_from_path=args.resume_from)
     if args.smoke_benchmark:
         print(
             "smoke_benchmark "
