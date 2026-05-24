@@ -9,7 +9,6 @@ from dataclasses import dataclass
 import numpy as np
 
 from abstraction import (
-    abstractbetting,
     abstractioncards_street_aware,
     parse_poker_string,
     postflop_betting_context,
@@ -1189,38 +1188,3 @@ def load_table(path=None):
         return StrategyTable(json.load(in_file))
 
 
-def save_strategy(strategy, path=None):
-    path = path or _default_path("blackjack.txt")
-    with open(path, "w") as out_file:
-        json.dump(strategy, out_file)
-
-
-def load_strategy(path=None):
-    path = path or _default_path("blackjack.txt")
-    with open(path, "r") as in_file:
-        return json.load(in_file)
-
-
-def export_average_strategy(table, path=None):
-    strategy = table.average_strategy()
-    save_strategy(strategy, path)
-    return strategy
-
-
-def selfplay(iterations=100_000, save_every=10_000):
-    import pyspiel
-
-    game = pyspiel.load_game("universal_poker", game_config)
-    trainer = LinearMCCFRTrainer(game)
-    table_path = _default_path("mccfr_table.json")
-    trainer.train(iterations, save_every=save_every, save_path=table_path)
-    export_average_strategy(trainer.table)
-    return trainer.table
-
-
-def _default_path(filename):
-    return os.path.join(os.path.dirname(os.path.realpath(__file__)), filename)
-
-
-if __name__ == "__main__":
-    selfplay()

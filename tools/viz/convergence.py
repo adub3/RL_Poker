@@ -194,12 +194,14 @@ def plot_convergence(checkpoints, pos_list, out_path):
         ax.plot(iters, l1s, color="#27ae60", linewidth=2, marker="o",
                 markersize=4, markerfacecolor="#2ecc71")
         ax.fill_between(iters, l1s, alpha=0.15, color="#27ae60")
-        ax.set_xlabel("Iterations", color="white", fontsize=10)
+        ax.set_xlabel("Iterations (log scale)", color="white", fontsize=10)
         ax.set_ylabel("Avg L1 distance (consecutive ckpts)", color="white", fontsize=10)
         ax.set_title(f"Strategy convergence — {label}", color="white", fontsize=11)
         ax.tick_params(colors="white")
         ax.spines[:].set_color("#334455")
-        ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"{int(x)//1000}k"))
+        ax.set_xscale("log")
+        ax.xaxis.set_major_formatter(plt.FuncFormatter(
+            lambda x, _: f"{int(x)//1_000_000}M" if x >= 1e6 else f"{int(x)//1000}k"))
         ax.grid(color="#334455", linewidth=0.5, linestyle="--")
 
     plt.tight_layout()

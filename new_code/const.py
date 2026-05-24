@@ -9,5 +9,5 @@ game_config = {
     "numRanks": 13,       # Number of ranks in the deck
     "numHoleCards": 2,    # Number of hole cards per player
     "numBoardCards": "0 3 1 1",  # Number of board cards per round
-    "stack": "20000 20000",  # Starting stack sizes for each player
+    "stack": "10000 10000",  # Starting stack sizes for each player (100bb @ BB=100)
 }

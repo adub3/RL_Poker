@@ -7,6 +7,7 @@ Usage:
     .venv/bin/python tools/play/play_vs_bot.py --seat 1          # you are BB
     .venv/bin/python tools/play/play_vs_bot.py --bot-only 20     # bot vs blueprint, N hands
     .venv/bin/python tools/play/play_vs_bot.py --iterations 500  # stronger (slower) search
+    .venv/bin/python tools/play/play_vs_bot.py --debug           # reveal bot hand after every action
 
 Actions during play:
     f / fold
@@ -74,6 +75,16 @@ def _display_state(state, human_seat: int):
     print(f"  Pot    : {pot}  |  Your stack: {stack}")
 
 
+def _bot_cards(state, bot_seat: int) -> list:
+    parsed = parse_poker_string(state.information_state_string(bot_seat))
+    return parsed.get("Private") or []
+
+
+def _show_bot_hand(state, bot_seat: int, label: str = "Bot's hand"):
+    cards = _bot_cards(state, bot_seat)
+    print(f"  {label:<12}: {_fmt_cards(cards)}")
+
+
 def _get_human_action(state, human_seat: int) -> int:
     legal = sorted(state.legal_actions())
     has_fold = 0 in legal
@@ -115,9 +126,10 @@ def _get_human_action(state, human_seat: int) -> int:
         print("  Invalid input. Try: f  c  <chip amount>")
 
 
-def play_hand(game, rts, human_seat: int) -> tuple[float, float]:
+def play_hand(game, rts, human_seat: int, debug: bool = False) -> tuple[float, float]:
     """Play one hand human vs bot. Returns (human_return, bot_return)."""
     state = game.new_initial_state()
+    bot_seat = 1 - human_seat
 
     while not state.is_terminal():
         if state.is_chance_node():
@@ -127,6 +139,10 @@ def play_hand(game, rts, human_seat: int) -> tuple[float, float]:
             continue
 
         player = state.current_player()
+
+        # Capture street before action so post-action reveal knows which street it was
+        parsed_pre = parse_poker_string(state.information_state_string(human_seat))
+        street = int(parsed_pre.get("Round") or 0)
 
         if player == human_seat:
             _display_state(state, human_seat)
@@ -141,6 +157,16 @@ def play_hand(game, rts, human_seat: int) -> tuple[float, float]:
             print(f"Bot: {move}  ({elapsed:.1f}s)")
 
         state.apply_action(int(action))
+
+        # Reveal bot hand mid-hand: always on river, always in debug mode
+        if not state.is_terminal() and (debug or street == 3):
+            tag = "[debug] " if debug and street != 3 else ""
+            _show_bot_hand(state, bot_seat, label=f"{tag}Bot's hand")
+
+    # Always reveal at hand end (showdown or fold)
+    print()
+    print("  ── Bot reveal ──────────────────────")
+    _show_bot_hand(state, bot_seat, label="Bot's hand")
 
     returns = state.returns()
     return float(returns[human_seat]), float(returns[1 - human_seat])
@@ -179,7 +205,8 @@ def main():
     parser = argparse.ArgumentParser(description="Play vs MCCFR bot (RTS)")
     parser.add_argument(
         "--checkpoint",
-        default="checkpoints/fullgame_100bb/mccfr_table_iter_00815000.json.gz",
+        default=None,
+        help="Path to checkpoint (default: latest in checkpoints/fullgame_100bb/)",
     )
     parser.add_argument(
         "--seat", type=int, default=0, choices=[0, 1],
@@ -193,10 +220,22 @@ def main():
         "--bot-only", type=int, default=0, metavar="N",
         help="Skip human play; run N bot-vs-bot hands as a smoke test",
     )
+    parser.add_argument(
+        "--debug", action="store_true",
+        help="Reveal bot hand after every action (always on; river always shown regardless)",
+    )
     args = parser.parse_args()
 
-    print(f"Loading blueprint from {args.checkpoint} …", end=" ", flush=True)
-    table = load_table(args.checkpoint)
+    checkpoint = args.checkpoint
+    if checkpoint is None:
+        ckpt_dir = ROOT / "checkpoints" / "fullgame_100bb"
+        candidates = sorted(ckpt_dir.glob("mccfr_table_iter_*.json.gz"))
+        if not candidates:
+            sys.exit(f"No checkpoints found in {ckpt_dir}")
+        checkpoint = str(candidates[-1])
+
+    print(f"Loading blueprint from {checkpoint} …", end=" ", flush=True)
+    table = load_table(checkpoint)
     blueprint = table.average_strategy()
     print(f"done  ({len(blueprint):,} infosets)")
 
@@ -224,7 +263,9 @@ def main():
     # Human vs bot
     # ------------------------------------------------------------------
     human_seat = args.seat
-    print(f"\nYou are P{human_seat} ({'SB' if human_seat == 0 else 'BB'}).")
+    mode_str = "  [debug: bot hand visible after every action]" if args.debug else ""
+    print(f"\nYou are P{human_seat} ({'SB' if human_seat == 0 else 'BB'}).{mode_str}")
+    print("Bot's hand is always shown on the river and at showdown.")
     print("Type  f=fold  c=call/check  <number>=raise amount\n")
 
     net = 0.0
@@ -235,7 +276,7 @@ def main():
         print(f"  HAND {hand_num}   (net so far: {net:+.0f})")
         print(f"{'─'*40}")
 
-        h_ret, b_ret = play_hand(game, rts0, human_seat)
+        h_ret, b_ret = play_hand(game, rts0, human_seat, debug=args.debug)
         net += h_ret
 
         print()
