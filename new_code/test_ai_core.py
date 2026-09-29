@@ -496,7 +496,10 @@ def test_game_config_for_checkpoint_keeps_the_rules_a_run_used():
 
 def test_linear_weight_total_matches_the_sum_of_weights():
     for n in (0, 1, 99, 100, 101, 250, 1_000):
-        assert linear_weight_total(n) == sum(linear_weight(t) for t in range(1, n + 1)), n
+        for start in (0, 7, 99, 100, 5_000):
+            for stride in (1, 3, 4, 150):
+                expected = sum(linear_weight(start + t * stride) for t in range(1, n + 1))
+                assert linear_weight_total(n, start, stride) == expected, (n, start, stride)
 
 
 def test_table_metrics_regret_bound():

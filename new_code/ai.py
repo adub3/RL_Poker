@@ -210,6 +210,24 @@ class StrategyTable:
 
     def __init__(self, data=None):
         self.data = data or {}
+        # When recording, every regret and average-strategy change is also
+        # added here (same node layout), so parallel workers can share just
+        # what they changed since the last sync. See take_delta().
+        self.delta = None
+
+    def start_recording(self):
+        self.delta = {}
+
+    def take_delta(self):
+        """Return the changes recorded since the last call and start afresh."""
+        delta, self.delta = self.delta, {}
+        return delta
+
+    def _delta_node(self, infoset):
+        return self.delta.setdefault(
+            infoset,
+            {"regret": {}, "strategy": {}, "strategy_sum": {}, "visits": 0},
+        )
 
     def ensure_infoset(self, infoset, legal_actions, action_keys=None):
         if not isinstance(infoset, str):
@@ -254,17 +272,30 @@ class StrategyTable:
     def add_regret(self, infoset, action, amount, floor=None):
         key = _action_key(action)
         node = self.ensure_infoset(infoset, [action], [key])
-        updated = float(node["regret"][key]) + amount
+        before = float(node["regret"][key])
+        updated = before + amount
         if floor is not None:
             updated = max(floor, updated)
         node["regret"][key] = updated
+        if self.delta is not None:
+            delta_regret = self._delta_node(infoset)["regret"]
+            delta_regret[key] = delta_regret.get(key, 0.0) + (updated - before)
 
     def batch_add_regret(self, infoset, action_keys, deltas, floor=None):
         node = self.data.get(infoset)
         if node is None:
             return
         regret = node["regret"]
-        if floor is not None:
+        if self.delta is not None:
+            delta_regret = self._delta_node(infoset)["regret"]
+            for key, delta in zip(action_keys, deltas):
+                before = float(regret[key])
+                updated = before + delta
+                if floor is not None:
+                    updated = max(floor, updated)
+                regret[key] = updated
+                delta_regret[key] = delta_regret.get(key, 0.0) + (updated - before)
+        elif floor is not None:
             for key, delta in zip(action_keys, deltas):
                 regret[key] = max(floor, float(regret[key]) + delta)
         else:
@@ -278,6 +309,12 @@ class StrategyTable:
         strategy_sum = node["strategy_sum"]
         for key, prob in zip(action_keys, probs):
             strategy_sum[key] += weight * prob
+        if self.delta is not None:
+            delta_node = self._delta_node(infoset)
+            delta_node["visits"] += 1
+            delta_sum = delta_node["strategy_sum"]
+            for key, prob in zip(action_keys, probs):
+                delta_sum[key] = delta_sum.get(key, 0.0) + weight * prob
 
     def average_strategy(self):
         average = {}
@@ -354,17 +391,51 @@ def merge_strategy_tables(tables):
     return merged
 
 
+def add_table_into(target, source, sign=1.0):
+    """target += sign * source for regret, strategy_sum and visits, in place.
+
+    target is a StrategyTable or its data dict; source likewise. Actions only
+    in source are added to target (current strategy entries start at 0).
+    """
+    target_data = target.data if isinstance(target, StrategyTable) else target
+    source_data = source.data if isinstance(source, StrategyTable) else source
+    for infoset, node in source_data.items():
+        target_node = target_data.setdefault(
+            infoset,
+            {"regret": {}, "strategy": {}, "strategy_sum": {}, "visits": 0},
+        )
+        target_node["visits"] += int(sign * int(node.get("visits", 0)))
+        target_strategy = target_node["strategy"]
+        for field in ("regret", "strategy_sum"):
+            target_field = target_node[field]
+            for action, value in node.get(field, {}).items():
+                key = _action_key(action)
+                target_field[key] = float(target_field.get(key, 0.0)) + sign * float(value)
+                target_strategy.setdefault(key, 0.0)
+
+
 def linear_weight(effective_iteration):
     """Weight LinearMCCFRTrainer gives iteration t: flat for 100, then linear."""
     return max(1, int(effective_iteration) - 99)
 
 
-def linear_weight_total(iterations):
-    """Sum of linear_weight(t) for t = 1..iterations."""
-    n = int(iterations)
-    if n <= 100:
-        return max(0, n)
-    return 100 + (n - 99) * (n - 98) // 2 - 1
+def linear_weight_total(iterations, start=0, stride=1):
+    """Sum of linear_weight(start + t * stride) for t = 1..iterations.
+
+    A trainer with iteration_stride=stride and start_iteration=start gives
+    its t-th iteration that weight.
+    """
+    n, start, stride = int(iterations), int(start), int(stride)
+    if n <= 0:
+        return 0
+    # linear_weight(g) is 1 until g reaches 100, then g - 99.
+    first_linear = max(1, -(-(100 - start) // stride))
+    flat = min(n, first_linear - 1)
+    if first_linear > n:
+        return flat
+    count = n - first_linear + 1
+    t_sum = (first_linear + n) * count // 2
+    return flat + count * (start - 99) + stride * t_sum
 
 
 def table_metrics(table, weight_total=None):
@@ -443,7 +514,10 @@ class TrainingCheckpointer:
 
         metrics = table_metrics(
             trainer.table,
-            weight_total=linear_weight_total(trainer.iteration + trainer.start_iteration),
+            weight_total=linear_weight_total(trainer.start_iteration)
+            + linear_weight_total(
+                trainer.iteration, trainer.start_iteration, trainer.iteration_stride
+            ),
         )
         metrics["iteration"] = trainer.iteration
         self._append_metrics(metrics)
@@ -1057,6 +1131,7 @@ class LinearMCCFRTrainer:
         action_abstractor=None,
         cutoff_street=None,
         start_iteration=0,
+        iteration_stride=1,
         rng=None,
     ):
         self.game = game
@@ -1078,7 +1153,11 @@ class LinearMCCFRTrainer:
             action_abstractor.rng = self.rng
         self.action_abstractor = action_abstractor
         self.cutoff_street = cutoff_street
+        # Linear weights follow overall training progress: iteration t of this
+        # trainer counts as start_iteration + t * iteration_stride. Parallel
+        # workers set the stride to the worker count.
         self.start_iteration = int(start_iteration)
+        self.iteration_stride = int(iteration_stride)
         self.iteration = 0
 
     def train(
@@ -1092,7 +1171,7 @@ class LinearMCCFRTrainer:
             self.iteration += 1
             # Flat weight for first 100 effective iterations, then linear.
             # start_iteration shifts the ramp so resumed runs continue smoothly.
-            effective = self.iteration + self.start_iteration
+            effective = self.start_iteration + self.iteration * self.iteration_stride
             weight = linear_weight(effective)
             for player in range(self.game.num_players()):
                 state = self.game.new_initial_state()
@@ -1318,8 +1397,12 @@ def save_table(table, path=None):
         open_fn = lambda filename, mode: gzip.open(filename, mode, compresslevel=1)
     else:
         open_fn = open
-    with open_fn(path, "wt") as out_file:
+    # Write to a temporary file and rename it into place, so a crash or kill
+    # mid-save never leaves a truncated checkpoint behind.
+    tmp_path = f"{path}.tmp"
+    with open_fn(tmp_path, "wt") as out_file:
         json.dump(table.data, out_file)
+    os.replace(tmp_path, path)
 
 
 def _default_path(filename):

@@ -17,6 +17,37 @@ Carlo Counterfactual Regret Minimization.
 - `tools/visualization/` - scripts that generate diagrams.
 - `archive/` - older prototypes and legacy experiments kept for reference.
 
+## Training on Oracle Cloud
+
+1. In Oracle Cloud, create a VM: Ubuntu 22.04 or 24.04, shape
+   `VM.Standard.A1.Flex` (Always Free covers up to 4 OCPUs and 24 GB RAM),
+   and add your SSH public key.
+2. SSH in and run:
+
+   ```sh
+   curl -fsSL https://raw.githubusercontent.com/adub3/RL_Poker/main/deploy/oracle/setup.sh | bash
+   ```
+
+   This installs everything and starts continuous training, an exploitability
+   check of the newest checkpoint every 6 hours, and TensorBoard.
+3. To watch it, from your own computer:
+
+   ```sh
+   ssh -L 6006:localhost:6006 ubuntu@<VM public IP>
+   ```
+
+   and open http://localhost:6006. TensorBoard listens only on the VM itself;
+   the SSH tunnel is what lets you in.
+
+Training resumes from the newest checkpoint after any restart and keeps the 6
+newest checkpoints. Memory grows with the table (each worker holds a full
+copy), so watch `system/memory_available_gb`; if it gets low, lower `WORKERS`
+in `deploy/oracle/train_forever.sh`. To copy checkpoints home:
+
+```sh
+rsync -av ubuntu@<VM public IP>:RL_Poker/checkpoints/fullgame_100bb/ checkpoints/fullgame_100bb/
+```
+
 ## Setup
 
 The project is currently pinned to Python 3.11.9 with `pyenv-win`.

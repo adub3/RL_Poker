@@ -24,6 +24,7 @@ Usage:
 import argparse
 import gzip
 import json
+import os
 import sqlite3
 import sys
 import time
@@ -46,6 +47,10 @@ def export_checkpoint(ckpt_path: Path, out_db: Path, batch_size: int = 10_000):
     print(f"Writing {out_db.name} ...", end=" ", flush=True)
     t1 = time.perf_counter()
 
+    # Build under a temporary name and rename when complete, so an interrupted
+    # export is redone next time instead of being mistaken for a finished DB.
+    final_db, out_db = out_db, out_db.with_name(out_db.name + ".tmp")
+    out_db.unlink(missing_ok=True)
     conn = sqlite3.connect(out_db)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
@@ -92,6 +97,10 @@ def export_checkpoint(ckpt_path: Path, out_db: Path, batch_size: int = 10_000):
     conn.close()
 
     elapsed = time.perf_counter() - t1
+    for suffix in ("-wal", "-shm"):
+        Path(str(out_db) + suffix).unlink(missing_ok=True)
+    os.replace(out_db, final_db)
+    out_db = final_db
     size_mb = out_db.stat().st_size / 1e6
     print(f"{written:,} infosets written, {skipped} skipped  "
           f"({elapsed:.1f}s, {size_mb:.1f} MB)")
