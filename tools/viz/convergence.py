@@ -16,13 +16,15 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-import matplotlib.gridspec as gridspec
 import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "new_code"))
+
+from ai import game_config_for_checkpoint  # noqa: E402
+from preflop import first_preflop_spots  # noqa: E402
 
 RANKS = list("AKQJT98765432")
 RANK_IDX = {r: i for i, r in enumerate(RANKS)}
@@ -52,10 +54,8 @@ BUCKET_COLOR = {
 }
 BUCKET_ORDER = ["fold", "call", "raise_small", "raise_med", "raise_large", "jam"]
 
-POS_CONFIG = {
-    "P0": ("open",  None,      "P0 · BB"),
-    "P1": ("c",     "0_5bb",   "P1 · SB"),
-}
+# {seat: (seq_filter, tc_filter, label)}; set in main() from the run's seat order.
+POS_CONFIG = {}
 
 BG = "#16213e"
 
@@ -264,6 +264,7 @@ def main():
     print(f"Found {len(checkpoints)} checkpoints: "
           f"{Path(checkpoints[0]).stem} → {Path(checkpoints[-1]).stem}")
 
+    POS_CONFIG.update(first_preflop_spots(game_config_for_checkpoint(ckpt_dir)))
     pos_list = ["P0", "P1"] if args.pos == "all" else [args.pos]
     dir_tag = ckpt_dir.name
 

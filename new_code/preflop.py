@@ -116,3 +116,20 @@ def preflop_coverage_metrics(table):
             entropy_total / len(aggregates) if aggregates else 0.0
         ),
     }
+
+
+def first_preflop_spots(config):
+    """{seat: (seq_filter, tc_filter, label)} for each seat's first preflop decision.
+
+    config is the run's game config; its firstPlayer decides the seat order.
+    """
+    if str(config["firstPlayer"]).split()[0] == "2":
+        return {
+            "P0": ("c", None, "P0 · BB · facing a limp"),
+            "P1": ("open", "0_5bb", "P1 · SB · first preflop action"),
+        }
+    # Legacy seat order: the big blind acted first preflop, then the small blind.
+    return {
+        "P0": ("open", None, "P0 · BB · acts first (legacy seat order)"),
+        "P1": ("c", "0_5bb", "P1 · SB · after BB checks (legacy seat order)"),
+    }

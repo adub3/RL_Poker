@@ -23,6 +23,11 @@ NEW_CODE = ROOT / "new_code"
 sys.path.insert(0, str(NEW_CODE))
 
 from ai import (  # noqa: E402
+    BET_SIZINGS,
+    bet_sizing_for_checkpoint,
+    game_config_for_checkpoint,
+    linear_weight_total,
+    run_manifest,
     LinearMCCFRTrainer,
     PreflopActionAbstractor,
     StrategyTable,
@@ -116,7 +121,7 @@ def finalize_table_strategy(table):
 def write_run_manifest(output_dir, args):
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    config, big_blind = game_config_for_stack(args.stack_bb)
+    config, big_blind = args.game_config, args.big_blind
     manifest = {
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
         "schema_version": "preflop_parallel_v3",
@@ -131,8 +136,10 @@ def write_run_manifest(output_dir, args):
         "prune_threshold": args.prune_threshold,
         "max_actions": args.max_actions,
         "cutoff_street": args.cutoff_street,
+        "bet_sizing": args.bet_sizing,
         "seed": args.seed,
         "start_iteration": args.start_iteration,
+        "worker_start_iteration": args.worker_start_iteration,
         "stack_bb": args.stack_bb,
         "big_blind": big_blind,
         "game_config": config,
@@ -177,15 +184,16 @@ def train_worker(worker_id, args, result_queue):
     try:
         import pyspiel
 
-        config, big_blind = game_config_for_stack(args.stack_bb)
+        config, big_blind = args.game_config, args.big_blind
         rng = np.random.default_rng(int(args.seed) + worker_id * 1_000_003)
         game = pyspiel.load_game("universal_poker", config)
-        starting_stack = int(args.stack_bb) * big_blind
+        starting_stack = int(config["stack"].split()[0])
         abstractor = PreflopActionAbstractor(
             big_blind=big_blind,
             starting_stack=starting_stack,
             rng=rng,
             max_actions=args.max_actions,
+            bet_sizing=args.bet_sizing,
         )
         trainer = LinearMCCFRTrainer(
             game,
@@ -196,7 +204,7 @@ def train_worker(worker_id, args, result_queue):
             prune_threshold=args.prune_threshold,
             regret_floor=args.prune_threshold - 10_000_000,
             cutoff_street=args.cutoff_street,
-            start_iteration=getattr(args, "start_iteration", 0),
+            start_iteration=args.worker_start_iteration,
             rng=rng,
         )
 
@@ -273,6 +281,8 @@ def write_stage(
     base_table=None,
     save_checkpoint=True,
     start_iteration=0,
+    base_weight_total=0,
+    worker_start_iteration=0,
 ):
     # merged_workers_table is already the incremental sum of all worker snapshots.
     # base_table (if present) is merged in-place to avoid allocating a third full copy.
@@ -294,7 +304,14 @@ def write_stage(
         checkpoint_save_seconds = time.perf_counter() - checkpoint_start
 
     metrics_start = time.perf_counter()
-    metrics = table_metrics(merged)
+    # Each worker weights its iterations from its own count (plus the resume
+    # offset); merged regrets are the sum over workers and the base table.
+    weight_total = base_weight_total + sum(
+        linear_weight_total(worker_start_iteration + int(s["local_iterations"]))
+        - linear_weight_total(worker_start_iteration)
+        for s in snapshots_meta
+    )
+    metrics = table_metrics(merged, weight_total=weight_total)
     metrics.update(preflop_coverage_metrics(merged))
     metrics_seconds = time.perf_counter() - metrics_start
 
@@ -417,6 +434,8 @@ def run(args, resume_from_path=None):
                     stage % args.checkpoint_every == 0 or stage == stages
                 ),
                 start_iteration=args.start_iteration,
+                base_weight_total=args.base_weight_total if base_table is not None else 0,
+                worker_start_iteration=args.worker_start_iteration,
             )
             del merged_workers_table
             gc.collect()
@@ -486,6 +505,13 @@ def main():
         ),
     )
     parser.add_argument(
+        "--bet-sizing",
+        choices=BET_SIZINGS,
+        default=None,
+        help="Postflop bet sizing. Defaults to v2 for new runs and to the "
+             "checkpoint's own sizing with --resume-from.",
+    )
+    parser.add_argument(
         "--resume-from",
         default=None,
         metavar="CHECKPOINT",
@@ -534,6 +560,16 @@ def main():
     # Resume: detect start_iteration from filename now (before workers fork),
     # but defer the actual table load until after forking inside run().
     if args.resume_from:
+        # A table only lines up with the bet sizing it was trained with.
+        resume_sizing = bet_sizing_for_checkpoint(args.resume_from)
+        if args.bet_sizing is None:
+            args.bet_sizing = resume_sizing
+        elif args.bet_sizing != resume_sizing:
+            raise ValueError(
+                f"--bet-sizing {args.bet_sizing} does not match {args.resume_from}, "
+                f"which was trained with {resume_sizing} sizing. Start a new run "
+                "to switch sizing."
+            )
         if args.start_iteration is None:
             m = re.search(r"iter_(\d+)", str(args.resume_from))
             args.start_iteration = int(m.group(1)) if m else 0
@@ -541,6 +577,24 @@ def main():
     else:
         if args.start_iteration is None:
             args.start_iteration = 0
+    if args.bet_sizing is None:
+        args.bet_sizing = "v2"
+    print(f"Bet sizing: {args.bet_sizing}")
+
+    # A resumed table keeps the rules it was trained under; new runs use const.py.
+    if args.resume_from:
+        args.game_config = game_config_for_checkpoint(args.resume_from)
+        previous_workers = int(run_manifest(args.resume_from).get("workers") or args.workers)
+    else:
+        args.game_config, _ = game_config_for_stack(args.stack_bb)
+        previous_workers = args.workers
+    args.big_blind = max(int(value) for value in str(args.game_config["blind"]).split())
+    args.stack_bb = int(args.game_config["stack"].split()[0]) // args.big_blind
+    print(f"Seat order (firstPlayer): {args.game_config['firstPlayer']}")
+    # start_iteration counts every worker's iterations together, but each
+    # worker's linear weights follow its own count, so continue from that.
+    args.worker_start_iteration = int(args.start_iteration) // previous_workers
+    args.base_weight_total = previous_workers * linear_weight_total(args.worker_start_iteration)
 
     summary = run(args, resume_from_path=args.resume_from)
     if args.smoke_benchmark:

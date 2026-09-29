@@ -14,12 +14,22 @@ from abstraction import (
     postflop_betting_context,
     preflop_betting_context,
 )
-from const import game_config
+from const import LEGACY_FIRST_PLAYER, game_config
 
 
 DEFAULT_PRUNE_THRESHOLD = -300_000_000
 DEFAULT_POT_FRACTIONS = (1 / 3, 1 / 2, 3 / 4, 1.0, 1.5, 2.0)
 DEFAULT_STACK_FRACTIONS = (1 / 4, 1 / 2, 3 / 4)
+# "legacy" is the postflop sizing used before the fix; tables trained with it
+# only line up with that sizing. Runs record theirs in run_manifest.json.
+BET_SIZINGS = ("legacy", "v2")
+DEFAULT_BET_SIZING = "v2"
+POSTFLOP_POT_FRACTIONS = (
+    ("bet_33", 1 / 3),
+    ("bet_50", 1 / 2),
+    ("bet_pot", 1.0),
+    ("bet_2x", 2.0),
+)
 RANK_VALUE_BY_CARD = {
     "2": 2,
     "3": 3,
@@ -344,13 +354,36 @@ def merge_strategy_tables(tables):
     return merged
 
 
-def table_metrics(table):
+def linear_weight(effective_iteration):
+    """Weight LinearMCCFRTrainer gives iteration t: flat for 100, then linear."""
+    return max(1, int(effective_iteration) - 99)
+
+
+def linear_weight_total(iterations):
+    """Sum of linear_weight(t) for t = 1..iterations."""
+    n = int(iterations)
+    if n <= 100:
+        return max(0, n)
+    return 100 + (n - 99) * (n - 98) // 2 - 1
+
+
+def table_metrics(table, weight_total=None):
+    """Summary numbers for a table.
+
+    With weight_total (the summed iteration weights behind its regrets),
+    avg_regret_bound is sum over infosets of max(0, max_a R(I, a)) divided by
+    weight_total. CFR theory bounds the sum of both players' average regrets,
+    and so twice the exploitability, by this number in a perfect-recall game.
+    Here it is a convergence signal only: regrets are sampled, the card
+    abstraction has imperfect recall, and pruning skips updates.
+    """
     metrics = {
         "infosets": len(table.data),
         "total_visits": 0,
         "total_strategy_mass": 0.0,
         "positive_regret": 0.0,
         "negative_regret": 0.0,
+        "max_positive_regret_sum": 0.0,
     }
 
     for bucket in ACTION_BUCKETS:
@@ -362,6 +395,10 @@ def table_metrics(table):
         metrics["total_visits"] += int(node.get("visits", 0))
         strategy_sum = node.get("strategy_sum", {})
         regret = node.get("regret", {})
+        if regret:
+            metrics["max_positive_regret_sum"] += max(
+                0.0, max(float(value) for value in regret.values())
+            )
         for action, mass in strategy_sum.items():
             bucket = action_bucket(action)
             strategy_mass = float(mass)
@@ -376,6 +413,13 @@ def table_metrics(table):
             else:
                 metrics["negative_regret"] += action_regret
 
+    if weight_total:
+        metrics["weight_total"] = weight_total
+        metrics["avg_regret_bound"] = metrics["max_positive_regret_sum"] / weight_total
+        if metrics["infosets"]:
+            metrics["avg_regret_per_infoset"] = (
+                metrics["avg_regret_bound"] / metrics["infosets"]
+            )
     return metrics
 
 
@@ -397,7 +441,10 @@ class TrainingCheckpointer:
         if trainer.iteration not in self.checkpoint_iterations:
             return
 
-        metrics = table_metrics(trainer.table)
+        metrics = table_metrics(
+            trainer.table,
+            weight_total=linear_weight_total(trainer.iteration + trainer.start_iteration),
+        )
         metrics["iteration"] = trainer.iteration
         self._append_metrics(metrics)
 
@@ -451,6 +498,38 @@ def _raise_range_from_seq(seq_str, big_blind, max_raise, no_bet_baseline=0):
     min_raise = last_top + (last_top - prev_top)
     min_raise = max(big_blind, min(min_raise, max_raise))
     return min_raise, max_raise, last_top
+
+
+def _raise_amounts(seq_str):
+    amounts = []
+    amt = ""
+    for ch in seq_str:
+        if ch.isdigit():
+            amt += ch
+            continue
+        if amt:
+            amounts.append(int(amt))
+            amt = ""
+    if amt:
+        amounts.append(int(amt))
+    return amounts
+
+
+def _street_raise_range(parsed, big_blind, starting_stack):
+    """Return (min_raise, max_raise, last_top) for the current street.
+
+    Action ids are cumulative chips committed across the whole hand. Each street
+    starts with both players committed to the last raise of the previous
+    streets (preflop and unraised streets: the big blind). The minimum raise
+    increment is the last increment on this street, and at least one big blind.
+    """
+    streets = (parsed.get("Sequences", "") or "").split("|")
+    earlier = _raise_amounts("|".join(streets[:-1]))
+    street_start = earlier[-1] if earlier else big_blind
+    tops = [street_start] + _raise_amounts(streets[-1])
+    last_top = tops[-1]
+    increment = max(big_blind, last_top - tops[-2]) if len(tops) > 1 else big_blind
+    return min(last_top + increment, starting_stack), starting_stack, last_top
 
 
 def _preflop_raise_range(parsed, big_blind, starting_stack=0):
@@ -683,7 +762,14 @@ class PreflopActionAbstractor(ActionAbstractor):
     an illegal action even when the full no-limit action space is large.
     """
 
-    def __init__(self, big_blind=100, rng=None, max_actions=None, starting_stack=0):
+    def __init__(
+        self,
+        big_blind=100,
+        rng=None,
+        max_actions=None,
+        starting_stack=0,
+        bet_sizing=DEFAULT_BET_SIZING,
+    ):
         super().__init__(
             pot_fractions=(),
             stack_fractions=(),
@@ -691,8 +777,11 @@ class PreflopActionAbstractor(ActionAbstractor):
             max_actions=max_actions,
             rng=rng,
         )
+        if bet_sizing not in BET_SIZINGS:
+            raise ValueError(f"bet_sizing must be one of {BET_SIZINGS}, got {bet_sizing!r}")
         self.big_blind = int(big_blind)
         self.starting_stack = int(starting_stack)
+        self.bet_sizing = bet_sizing
 
     def select_actions(self, state, legal_actions, parsed=None):
         return [
@@ -816,7 +905,12 @@ class PreflopActionAbstractor(ActionAbstractor):
             if len(money) >= 2
             else 0
         )
-        min_raise, max_raise, last_top = _preflop_raise_range(
+        # Legacy keeps the old parser, which drops all but the last of
+        # back-to-back raises, so pre-fix tables still line up.
+        raise_range = (
+            _preflop_raise_range if self.bet_sizing == "legacy" else _street_raise_range
+        )
+        min_raise, max_raise, last_top = raise_range(
             parsed, self.big_blind, self.starting_stack
         )
         has_raises = max_raise > last_top
@@ -845,8 +939,54 @@ class PreflopActionAbstractor(ActionAbstractor):
         return specs
 
     def _postflop_specs_direct(self, parsed):
-        # Postflop action_ids are CUMULATIVE across all streets (same encoding as preflop).
-        # Use _preflop_raise_range (full Sequences + starting_stack) — it is correct for all streets.
+        if self.bet_sizing == "legacy":
+            return self._postflop_specs_direct_legacy(parsed)
+
+        money = parsed.get("Money") or []
+        player = int(parsed.get("Player", 0) or 0)
+        to_call = (
+            max(0, int(money[player]) - int(money[1 - player]))
+            if len(money) >= 2
+            else 0
+        )
+        min_raise, max_raise, last_top = _street_raise_range(
+            parsed, self.big_blind, self.starting_stack
+        )
+
+        specs = []
+        seen = set()
+        if to_call > 0:
+            specs.append(DecisionAction("fold", 0))
+            seen.add(0)
+        specs.append(DecisionAction("call", 1))
+        seen.add(1)
+
+        if max_raise > last_top:
+            specs.append(DecisionAction("min_raise", min_raise))
+            seen.add(min_raise)
+            # Sizes are fractions of the pot after calling, added on top of the
+            # amount needed to call (last_top is also each player's total then).
+            pot_after_call = 2 * last_top
+            for label, fraction in POSTFLOP_POT_FRACTIONS:
+                amount = last_top + int(round(fraction * pot_after_call))
+                amount = max(min_raise, min(max_raise, amount))
+                if amount not in seen:
+                    specs.append(DecisionAction(label, amount))
+                    seen.add(amount)
+            if max_raise not in seen:
+                specs.append(DecisionAction("jam", max_raise))
+
+        if self.max_actions is not None:
+            return specs[: self.max_actions]
+        return specs
+
+    def _postflop_specs_direct_legacy(self, parsed):
+        """Pre-fix sizing, kept so checkpoints trained with it can still be read.
+
+        Its pot targets omit the chips already committed, so bet_pot is really
+        a half-pot bet, bet_2x is 1.5x pot, and bet_33/bet_50 collapse into
+        min_raise. Its min_raise carries the previous street's raise increment.
+        """
         money = parsed.get("Money") or []
         player = int(parsed.get("Player", 0) or 0)
         to_call = (
@@ -953,13 +1093,13 @@ class LinearMCCFRTrainer:
             # Flat weight for first 100 effective iterations, then linear.
             # start_iteration shifts the ramp so resumed runs continue smoothly.
             effective = self.iteration + self.start_iteration
-            linear_weight = max(1, effective - 99)
+            weight = linear_weight(effective)
             for player in range(self.game.num_players()):
                 state = self.game.new_initial_state()
                 self.mccfr(
                     state,
                     traverser=player,
-                    linear_weight=linear_weight,
+                    linear_weight=weight,
                     allow_pruning=self._should_prune_iteration(),
                 )
 
@@ -1045,9 +1185,10 @@ class LinearMCCFRTrainer:
                 action_prob = 1.0 / traverser_count
             node_value += action_prob * action_value
 
-        self.table.add_average_strategy(
-            infoset, legal_actions, strategy, linear_weight
-        )
+        # The average strategy is only accumulated at the other player's nodes,
+        # where sampling visits an infoset in proportion to that player's own
+        # reach probability. The traverser explores every action, so adding
+        # here would weight its infosets by the wrong reach.
 
         action_keys = _action_keys(legal_actions)
         deltas = []
@@ -1179,6 +1320,40 @@ def save_table(table, path=None):
         open_fn = open
     with open_fn(path, "wt") as out_file:
         json.dump(table.data, out_file)
+
+
+def _default_path(filename):
+    return os.path.join(os.path.dirname(os.path.realpath(__file__)), filename)
+
+
+def run_manifest(path):
+    """A checkpoint's run_manifest.json (or {} if it has none)."""
+    folder = os.path.dirname(os.path.abspath(path)) if os.path.isfile(path) else path
+    manifest_path = os.path.join(folder, "run_manifest.json")
+    if not os.path.exists(manifest_path):
+        return {}
+    with open(manifest_path) as manifest_file:
+        return json.load(manifest_file)
+
+
+def game_config_for_checkpoint(path):
+    """Game rules a checkpoint was trained under, from its run_manifest.json.
+
+    Without a recorded config, the run predates the seat-order fix.
+    """
+    config = run_manifest(path).get("game_config")
+    if config:
+        return dict(config)
+    return dict(game_config, firstPlayer=LEGACY_FIRST_PLAYER)
+
+
+def bet_sizing_for_checkpoint(path):
+    """Bet sizing a checkpoint was trained with, from its run_manifest.json.
+
+    Runs from before the sizing fix have no "bet_sizing" entry (or no manifest)
+    and used the legacy sizing.
+    """
+    return run_manifest(path).get("bet_sizing", "legacy")
 
 
 def load_table(path=None):

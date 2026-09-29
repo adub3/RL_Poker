@@ -28,9 +28,8 @@ NEW_CODE = ROOT / "new_code"
 sys.path.insert(0, str(NEW_CODE))
 
 from abstraction import parse_poker_string  # noqa: E402
-from ai import load_table  # noqa: E402
-from const import game_config as _BASE_CONFIG  # noqa: E402
-from rts import RealTimeSearch, _BIG_BLIND, _STARTING_STACK  # noqa: E402
+from ai import bet_sizing_for_checkpoint, game_config_for_checkpoint, load_table  # noqa: E402
+from rts import RealTimeSearch, _STARTING_STACK  # noqa: E402
 
 
 RANK_NAMES = {"T": "10", "J": "J", "Q": "Q", "K": "K", "A": "A"}
@@ -39,8 +38,9 @@ SUIT_SYMBOLS = {"h": "♥", "d": "♦", "c": "♣", "s": "♠"}
 STREETS = {0: "Preflop", 1: "Flop", 2: "Turn", 3: "River"}
 
 
-def _game_config():
-    cfg = dict(_BASE_CONFIG)
+def _game_config(checkpoint):
+    """The rules the checkpoint was trained under (seat order changed over time)."""
+    cfg = game_config_for_checkpoint(checkpoint)
     cfg["stack"] = f"{_STARTING_STACK} {_STARTING_STACK}"
     return cfg
 
@@ -210,7 +210,7 @@ def main():
     )
     parser.add_argument(
         "--seat", type=int, default=0, choices=[0, 1],
-        help="Your seat: 0=SB, 1=BB",
+        help="Your seat: 0=BB, 1=SB",
     )
     parser.add_argument(
         "--iterations", type=int, default=100,
@@ -239,15 +239,16 @@ def main():
     blueprint = table.average_strategy()
     print(f"done  ({len(blueprint):,} infosets)")
 
-    rts0 = RealTimeSearch(blueprint, iterations=args.iterations)
+    bet_sizing = bet_sizing_for_checkpoint(checkpoint)
+    rts0 = RealTimeSearch(blueprint, iterations=args.iterations, bet_sizing=bet_sizing)
 
-    game = pyspiel.load_game("universal_poker", _game_config())
+    game = pyspiel.load_game("universal_poker", _game_config(checkpoint))
 
     # ------------------------------------------------------------------
     # Bot-only smoke test
     # ------------------------------------------------------------------
     if args.bot_only > 0:
-        rts1 = RealTimeSearch(blueprint, iterations=args.iterations)
+        rts1 = RealTimeSearch(blueprint, iterations=args.iterations, bet_sizing=bet_sizing)
         p0 = BlueprintPolicy(rts0)
         p1 = BlueprintPolicy(rts1)
         total = [0.0, 0.0]
@@ -264,7 +265,7 @@ def main():
     # ------------------------------------------------------------------
     human_seat = args.seat
     mode_str = "  [debug: bot hand visible after every action]" if args.debug else ""
-    print(f"\nYou are P{human_seat} ({'SB' if human_seat == 0 else 'BB'}).{mode_str}")
+    print(f"\nYou are P{human_seat} ({'BB' if human_seat == 0 else 'SB'}).{mode_str}")
     print("Bot's hand is always shown on the river and at showdown.")
     print("Type  f=fold  c=call/check  <number>=raise amount\n")
 

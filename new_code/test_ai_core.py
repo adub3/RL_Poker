@@ -11,12 +11,19 @@ from ai import (
     PreflopActionAbstractor,
     StrategyTable,
     TrainingCheckpointer,
+    _default_path,
+    bet_sizing_for_checkpoint,
+    game_config_for_checkpoint,
+    linear_weight,
+    linear_weight_total,
     load_table,
     merge_strategy_tables,
     preflop_hand_strength,
     save_table,
     table_metrics,
 )
+from abstraction import parse_poker_string
+from const import game_config
 from preflop import hand_matrix_position
 
 
@@ -385,6 +392,159 @@ def test_checkpointer_writes_sparse_metrics_and_compressed_tables():
         assert table_metrics(trainer.table)["infosets"] == 1
 
 
+def _random_openspiel_decisions(hands, seed):
+    """Yield (state, parsed) at every decision of random full-game hands."""
+    import pyspiel
+
+    game = pyspiel.load_game("universal_poker", game_config)
+    rng = np.random.default_rng(seed)
+    walker = PreflopActionAbstractor(big_blind=100, starting_stack=10_000)
+    for _ in range(hands):
+        state = game.new_initial_state()
+        while not state.is_terminal():
+            if state.is_chance_node():
+                actions, probs = zip(*state.chance_outcomes())
+                state.apply_action(int(rng.choice(actions, p=probs)))
+                continue
+            parsed = parse_poker_string(state.information_state_string())
+            yield state, parsed
+            # Walk with small bets so hands reach the turn and river.
+            specs = [s for s in walker.select_action_specs_direct(parsed) if s.key != "fold"]
+            small = [s for s in specs if s.key != "jam"] or specs
+            state.apply_action(int(small[int(rng.integers(len(small)))]))
+
+
+def test_postflop_bet_sizing_is_legal_and_pot_relative():
+    try:
+        import pyspiel  # noqa: F401
+    except ImportError:
+        print("skipped: pyspiel not installed")
+        return
+    v2 = PreflopActionAbstractor(big_blind=100, starting_stack=10_000)
+    legacy = PreflopActionAbstractor(big_blind=100, starting_stack=10_000, bet_sizing="legacy")
+    postflop_checked = 0
+    for state, parsed in _random_openspiel_decisions(hands=300, seed=7):
+        legal = set(state.legal_actions())
+        for abstractor in (v2, legacy):
+            for spec in abstractor.select_action_specs_direct(parsed):
+                assert int(spec) in legal, (abstractor.bet_sizing, spec, parsed)
+        specs = {s.key: int(s) for s in v2.select_action_specs_direct(parsed)}
+        raises = sorted(a for a in legal if a > 1)
+        if raises and raises[0] < 10_000:
+            assert specs["min_raise"] == raises[0], (specs, raises[0], parsed)
+        if int(parsed["Round"]) == 0:
+            continue
+        money = parsed["Money"]
+        if money[0] == money[1] and "bet_pot" in specs:
+            committed = 10_000 - money[0]
+            pot = 2 * committed
+            if committed + pot < 10_000:
+                assert specs["bet_pot"] - committed == pot, (specs, parsed)
+            if committed + round(pot / 3) > specs["min_raise"]:
+                assert specs["bet_33"] - committed == round(pot / 3), (specs, parsed)
+        postflop_checked += 1
+    assert postflop_checked > 200, postflop_checked
+
+
+def test_bet_sizing_for_checkpoint_reads_manifest():
+    with tempfile.TemporaryDirectory() as tmp:
+        checkpoint = os.path.join(tmp, "mccfr_table_iter_00000100.json.gz")
+        open(checkpoint, "w").close()
+        assert bet_sizing_for_checkpoint(checkpoint) == "legacy"
+        with open(os.path.join(tmp, "run_manifest.json"), "w") as manifest:
+            manifest.write('{"schema_version": "preflop_parallel_v3"}')
+        assert bet_sizing_for_checkpoint(checkpoint) == "legacy"
+        with open(os.path.join(tmp, "run_manifest.json"), "w") as manifest:
+            manifest.write('{"bet_sizing": "v2"}')
+        assert bet_sizing_for_checkpoint(checkpoint) == "v2"
+        assert bet_sizing_for_checkpoint(tmp) == "v2"
+
+
+def test_small_blind_acts_first_preflop_and_big_blind_first_postflop():
+    try:
+        import pyspiel
+    except ImportError:
+        print("skipped: pyspiel not installed")
+        return
+    game = pyspiel.load_game("universal_poker", game_config)
+    state = game.new_initial_state()
+    while state.is_chance_node():
+        state.apply_action(state.chance_outcomes()[0][0])
+    parsed = parse_poker_string(state.information_state_string())
+    # P1 posted the small blind (50), P0 the big blind (100).
+    assert parsed["Player"] == 1 and parsed["Money"] == [9900, 9950]
+    assert 0 in state.legal_actions()  # the small blind can fold
+    state.apply_action(1)  # small blind calls
+    assert state.current_player() == 0  # big blind has the option
+    state.apply_action(1)  # big blind checks
+    while state.is_chance_node():
+        state.apply_action(state.chance_outcomes()[0][0])
+    assert state.current_player() == 0  # big blind acts first on the flop
+
+
+def test_game_config_for_checkpoint_keeps_the_rules_a_run_used():
+    with tempfile.TemporaryDirectory() as tmp:
+        checkpoint = os.path.join(tmp, "mccfr_table_iter_00000100.json.gz")
+        open(checkpoint, "w").close()
+        assert game_config_for_checkpoint(checkpoint)["firstPlayer"] == "1"
+        with open(os.path.join(tmp, "run_manifest.json"), "w") as manifest:
+            manifest.write('{"game_config": {"firstPlayer": "2 1 1 1", "stack": "5000 5000"}}')
+        config = game_config_for_checkpoint(checkpoint)
+        assert config["firstPlayer"] == "2 1 1 1"
+        assert config["stack"] == "5000 5000"
+
+
+def test_linear_weight_total_matches_the_sum_of_weights():
+    for n in (0, 1, 99, 100, 101, 250, 1_000):
+        assert linear_weight_total(n) == sum(linear_weight(t) for t in range(1, n + 1)), n
+
+
+def test_table_metrics_regret_bound():
+    table = StrategyTable()
+    table.ensure_infoset("a", [1, 2])
+    table.ensure_infoset("b", [1, 2])
+    table.add_regret("a", 1, 30.0)
+    table.add_regret("a", 2, 10.0)
+    table.add_regret("b", 1, -5.0)
+    metrics = table_metrics(table, weight_total=10)
+    assert metrics["max_positive_regret_sum"] == 30.0
+    assert metrics["avg_regret_bound"] == 3.0
+    assert metrics["avg_regret_per_infoset"] == 1.5
+    assert "avg_regret_bound" not in table_metrics(table)
+
+
+def test_default_path_points_into_new_code():
+    assert _default_path("x.json") == os.path.join(os.path.dirname(os.path.realpath(__file__)), "x.json")
+
+
+def test_trainer_converges_like_openspiel_reference_on_leduc():
+    """OpenSpiel's external-sampling MCCFR reaches ~0.55 after 4k iterations."""
+    try:
+        import pyspiel
+        from open_spiel.python import policy as policy_lib
+        from open_spiel.python.algorithms import exploitability
+    except ImportError:
+        print("skipped: pyspiel not installed")
+        return
+    game = pyspiel.load_game("leduc_poker")
+    trainer = LinearMCCFRTrainer(
+        game, infoset_fn=lambda state: state.information_state_string(),
+        rng=np.random.default_rng(0),
+    )
+    trainer.train(4_000)
+    policy = policy_lib.TabularPolicy(game)
+    average = trainer.table.average_strategy()
+    for infostate, index in policy.state_lookup.items():
+        probs = average.get(infostate)
+        if not probs:
+            continue
+        row = np.array([probs.get(str(a), 0.0) for a in range(game.num_distinct_actions())])
+        row = row * policy.legal_actions_mask[index]
+        if row.sum() > 0:
+            policy.action_probability_array[index] = row / row.sum()
+    assert exploitability.exploitability(game, policy) < 0.7
+
+
 if __name__ == "__main__":
     test_strategy_table_regret_matching()
     test_average_strategy_uses_linear_weight()
@@ -402,4 +562,12 @@ if __name__ == "__main__":
     test_preflop_cutoff_values_stronger_hands_higher()
     test_postflop_abstraction_remains_lossy_bucket()
     test_checkpointer_writes_sparse_metrics_and_compressed_tables()
+    test_postflop_bet_sizing_is_legal_and_pot_relative()
+    test_bet_sizing_for_checkpoint_reads_manifest()
+    test_small_blind_acts_first_preflop_and_big_blind_first_postflop()
+    test_game_config_for_checkpoint_keeps_the_rules_a_run_used()
+    test_linear_weight_total_matches_the_sum_of_weights()
+    test_table_metrics_regret_bound()
+    test_default_path_points_into_new_code()
+    test_trainer_converges_like_openspiel_reference_on_leduc()
     print("ai core tests passed")

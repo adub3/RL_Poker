@@ -21,6 +21,7 @@ sys.path.insert(0, str(ROOT / "new_code"))
 
 from abstraction import parse_poker_string  # noqa: E402
 from ai import (  # noqa: E402
+    DEFAULT_BET_SIZING,
     PreflopActionAbstractor,
     StrategyTable,
     _action_key,
@@ -42,6 +43,7 @@ class RealTimeSearch:
         iterations: int = 100,
         rollout_samples: int = 5,
         rng=None,
+        bet_sizing: str = DEFAULT_BET_SIZING,
     ):
         self.blueprint = blueprint
         self.iterations = iterations
@@ -50,6 +52,7 @@ class RealTimeSearch:
         self._abstractor = PreflopActionAbstractor(
             big_blind=_BIG_BLIND,
             starting_stack=_STARTING_STACK,
+            bet_sizing=bet_sizing,
         )
         self._isa_cache: dict = {}  # cleared per select_action call
 

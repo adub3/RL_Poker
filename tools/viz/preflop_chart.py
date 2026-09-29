@@ -17,10 +17,12 @@ from pathlib import Path
 
 import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
-import numpy as np
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "new_code"))
+
+from ai import game_config_for_checkpoint  # noqa: E402
+from preflop import first_preflop_spots  # noqa: E402
 
 RANKS = list("AKQJT98765432")
 RANK_IDX = {r: i for i, r in enumerate(RANKS)}
@@ -219,13 +221,6 @@ def draw_chart(strategies, title, out_path):
     print(f"Saved: {out_path}")
 
 
-# Per-position defaults: (seq_filter, tc_filter, display label)
-POS_CONFIG = {
-    "P0": ("open",  None,     "P0 · BB · first postflop · opens preflop last"),
-    "P1": ("c",    "0_5bb",  "P1 · SB/BTN · first preflop action"),
-}
-
-
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("checkpoint", nargs="?", default=None)
@@ -250,9 +245,10 @@ def main():
     plots_dir.mkdir(parents=True, exist_ok=True)
 
     positions = ["P0", "P1"] if args.pos == "all" else [args.pos]
+    spots = first_preflop_spots(game_config_for_checkpoint(args.checkpoint))
 
     for pos in positions:
-        seq_f, tc_f, label = POS_CONFIG.get(pos, ("open", None, pos))
+        seq_f, tc_f, label = spots[pos]
         out_path = args.out or str(
             plots_dir / f"{Path(args.checkpoint).stem}_chart_{pos}.png"
         )
