@@ -19,33 +19,93 @@ Carlo Counterfactual Regret Minimization.
 
 ## Training on Oracle Cloud
 
-1. In Oracle Cloud, create a VM: Ubuntu 22.04 or 24.04, shape
-   `VM.Standard.A1.Flex` (Always Free covers up to 4 OCPUs and 24 GB RAM),
-   and add your SSH public key.
-2. SSH in and run:
+Training runs on an Oracle Cloud Infrastructure (OCI) "Always Free" server:
+an Ampere ARM machine with up to 4 cores and 24 GB of RAM at no cost. Check
+the current terms at oracle.com/cloud/free. A few catches:
 
-   ```sh
-   curl -fsSL https://raw.githubusercontent.com/adub3/RL_Poker/main/deploy/oracle/setup.sh | bash
-   ```
+- Signup needs a credit card to verify your identity. You aren't charged as
+  long as you stay on the free tier and don't upgrade to Pay As You Go.
+- Free ARM servers are sometimes sold out ("Out of host capacity"). Try
+  another availability domain, or try again later.
+- Oracle can reclaim free servers that sit idle. Continuous training keeps it
+  busy.
 
-   This installs everything and starts continuous training, an exploitability
-   check of the newest checkpoint every 6 hours, and TensorBoard.
-3. To watch it, from your own computer:
+### 1. Create an account
 
-   ```sh
-   ssh -L 6006:localhost:6006 ubuntu@<VM public IP>
-   ```
+Sign up at oracle.com/cloud/free. Choose your home region carefully; it can't
+be changed later.
 
-   and open http://localhost:6006. TensorBoard listens only on the VM itself;
-   the SSH tunnel is what lets you in.
+### 2. Get your SSH key
 
-Training resumes from the newest checkpoint after any restart and keeps the 6
-newest checkpoints. Memory grows with the table (each worker holds a full
-copy), so watch `system/memory_available_gb`; if it gets low, lower `WORKERS`
-in `deploy/oracle/train_forever.sh`. To copy checkpoints home:
+On your own computer (create a key only if you don't have one):
 
 ```sh
-rsync -av ubuntu@<VM public IP>:RL_Poker/checkpoints/fullgame_100bb/ checkpoints/fullgame_100bb/
+ls ~/.ssh/id_ed25519.pub || ssh-keygen -t ed25519
+cat ~/.ssh/id_ed25519.pub
+```
+
+Copy the line it prints.
+
+### 3. Create the server
+
+In the Oracle console, go to **Compute → Instances → Create instance**:
+
+- **Image:** Canonical Ubuntu 22.04 (24.04 works too).
+- **Shape:** Change shape → **Ampere** → `VM.Standard.A1.Flex`, with
+  **4 OCPUs** and **24 GB** memory.
+- **Networking:** keep the defaults; make sure it assigns a public IPv4 address.
+- **SSH keys:** "Paste public keys", then paste the line from step 2.
+
+Click **Create**. When it shows "Running", copy its **Public IP address**.
+
+### 4. Log in and run the setup
+
+```sh
+ssh ubuntu@<PUBLIC_IP>
+curl -fsSL https://raw.githubusercontent.com/adub3/RL_Poker/main/deploy/oracle/setup.sh | bash
+```
+
+This takes a few minutes. It installs Python and the requirements, runs the
+tests, and starts three services:
+
+- `rl-poker-train`: trains continuously and resumes from the newest
+  checkpoint after any restart. It keeps the 6 newest checkpoints.
+- `rl-poker-eval.timer`: measures exploitability of the newest checkpoint
+  every 6 hours, at low priority.
+- `rl-poker-tensorboard`: TensorBoard on port 6006 of the server.
+
+### 5. Open TensorBoard
+
+From a new terminal on your own computer:
+
+```sh
+ssh -L 6006:localhost:6006 ubuntu@<PUBLIC_IP>
+```
+
+Leave it open and go to http://localhost:6006. TensorBoard has no login, so it
+only listens on the server itself; the SSH tunnel is what lets you in.
+
+Charts to watch:
+
+- `convergence/avg_regret_bound`: should trend down.
+- `exploitability/bb100`: first point about an hour after boot, then every
+  6 hours.
+- `system/memory_available_gb`: memory grows with the table, since each
+  worker holds a full copy. If it nears 0, set a lower `WORKERS` in
+  `deploy/oracle/train_forever.sh` and restart training.
+
+### Useful commands (on the server)
+
+```sh
+journalctl -u rl-poker-train -f        # live training log
+systemctl status rl-poker-train        # is it running?
+sudo systemctl restart rl-poker-train  # restart (resumes from the newest checkpoint)
+```
+
+To copy checkpoints to your own computer (run from the repo there):
+
+```sh
+rsync -av ubuntu@<PUBLIC_IP>:RL_Poker/checkpoints/fullgame_100bb/ checkpoints/fullgame_100bb/
 ```
 
 ## Setup
