@@ -71,7 +71,7 @@ tests, and starts three services:
 - `rl-poker-train`: trains continuously and resumes from the newest
   checkpoint after any restart. It keeps the 6 newest checkpoints.
 - `rl-poker-eval.timer`: measures exploitability of the newest checkpoint
-  every 6 hours, at low priority.
+  with local best response every 6 hours, at low priority.
 - `rl-poker-tensorboard`: TensorBoard on port 6006 of the server.
 
 ### 5. Open TensorBoard
@@ -88,8 +88,8 @@ only listens on the server itself; the SSH tunnel is what lets you in.
 Charts to watch:
 
 - `convergence/avg_regret_bound`: should trend down.
-- `exploitability/bb100`: first point about an hour after boot, then every
-  6 hours.
+- `exploitability/lbr_bb100`: first point an hour or two after boot, then
+  every 6 hours. Should trend down; see "Measuring exploitability".
 - `system/memory_available_gb`: memory grows with the table, since each
   worker holds a full copy. If it nears 0, set a lower `WORKERS` in
   `deploy/oracle/train_forever.sh` and restart training.
@@ -133,17 +133,41 @@ python -B tools\evaluation\test_best_response.py
 ## Measuring exploitability
 
 ```sh
-.venv/bin/python tools/evaluation/mc_exploitability.py --br-iters 10000 --eval-games 5000
+.venv/bin/python tools/evaluation/lbr_exploitability.py --hands 2000 --workers 4
 ```
 
-For each seat, a best responder learns action values against the frozen
-blueprint, then plays its best action on fresh hands. The result is a lower
-bound on exploitability within the bot's own abstraction, reported in bb/100
-with a 95% interval. It also reports how often the blueprint had no entry for a
-decision (those are played uniformly at random, like the live bot). More
-`--br-iters` tightens the bound; more `--eval-games` narrows the interval.
-`tools/evaluation/test_best_response.py` checks the estimator against exact
-exploitability on Kuhn and Leduc poker.
+Local best response (LBR; Lisý & Bowling, 2017) plays the real game against
+the frozen blueprint, with no abstraction and no training of its own. At each
+decision it tracks the bot's range (a weight for each of the 1,326 hole-card
+combos, updated from the blueprint's action probabilities), computes its
+showdown equity against that range, and picks the action with the best value
+assuming the hand is checked or called down afterwards; for raises this uses
+the blueprint's fold probability. It only uses information its own seat could
+know, so its winnings are a lower bound on exploitability in the full game,
+reported in bb/100 with a 95% interval.
+
+Several variants play the same duplicate deals (each deal from both seats with
+the same cards) and differ in the raise sizes they consider:
+
+- `fcpa`: pot and all-in.
+- `fc_half_pot_2pot`: half pot, pot, 2x pot and all-in.
+- `bucket_edges`: the smallest and largest raise the bot reads as each of its
+  bet-size buckets, plus all-in. This finds leaks in how the bot maps sizes it
+  didn't train on.
+
+The headline number is the best variant. The bot reads raises it never
+trained on through action translation (`new_code/translation.py`): each
+off-menu raise counts as a mix of the two nearest menu sizes, weighted by the
+pseudo-harmonic mapping, instead of a betting line with no table entry.
+`--no-translation` turns this off. `blueprint missing` is how often the bot
+still hit a spot with no table entry and played uniformly at random.
+`tools/evaluation/test_lbr.py` checks that the range uses the bot's exact
+infoset keys, that decisions never depend on the bot's cards, the range
+update, the equity calculation, and that LBR crushes a uniformly random bot.
+
+The older greedy best response (`mc_exploitability.py`) learns a responder
+inside the bot's own abstraction, so it shares the bot's blind spots and can
+come out negative with too few `--br-iters`.
 
 ## Rules versions
 

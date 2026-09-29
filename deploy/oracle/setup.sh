@@ -5,14 +5,14 @@
 #
 # Installs Python 3.11 and the requirements, then starts three services:
 #   rl-poker-train        trains continuously, resuming after any restart
-#   rl-poker-eval.timer   measures exploitability of the newest checkpoint every 6 hours
+#   rl-poker-eval.timer   measures exploitability (LBR) of the newest checkpoint every 6 hours
 #   rl-poker-tensorboard  TensorBoard on 127.0.0.1:6006 (reach it with an SSH tunnel)
 set -euo pipefail
 
 REPO="$HOME/RL_Poker"
 
 sudo apt-get update -y
-sudo apt-get install -y git curl
+sudo apt-get install -y git curl build-essential
 
 if ! command -v uv >/dev/null 2>&1; then
   curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -27,9 +27,13 @@ fi
 cd "$REPO"
 
 uv venv --python 3.11 .venv
+# eval7 has no ARM wheel, and its build needs Cython without declaring it.
+uv pip install --python .venv/bin/python cython setuptools wheel
+uv pip install --python .venv/bin/python --no-build-isolation eval7
 uv pip install --python .venv/bin/python -r requirements.txt
 .venv/bin/python -c "import pyspiel; assert 'universal_poker' in pyspiel.registered_names(); print('universal_poker OK')"
 .venv/bin/python -B new_code/test_ai_core.py
+.venv/bin/python -B tools/evaluation/test_lbr.py
 
 chmod +x deploy/oracle/*.sh
 
