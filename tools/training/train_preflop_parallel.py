@@ -2,11 +2,9 @@ import argparse
 import csv
 import ctypes as _ctypes
 import gc
-import gzip
 import json
 import math
 import os
-import pickle as _pickle
 import queue
 import re
 import sys
@@ -24,6 +22,7 @@ sys.path.insert(0, str(NEW_CODE))
 
 from ai import (  # noqa: E402
     BET_SIZINGS,
+    DEFAULT_BET_SIZING,
     add_table_into,
     bet_sizing_for_checkpoint,
     game_config_for_checkpoint,
@@ -38,16 +37,6 @@ from ai import (  # noqa: E402
 from const import game_config  # noqa: E402
 from preflop import preflop_coverage_metrics  # noqa: E402
 from tb_logging import default_logdir, log_training_metrics, open_writer, system_memory_gb  # noqa: E402
-
-
-def _save_snapshot(table, path):
-    with gzip.open(path, "wb", compresslevel=1) as f:
-        _pickle.dump(table.data, f, protocol=4)
-
-
-def _load_snapshot(path):
-    with gzip.open(path, "rb") as f:
-        return StrategyTable(_pickle.load(f))
 
 
 def _malloc_trim():
@@ -206,8 +195,6 @@ def train_worker(worker_id, args, result_queue, command_queue):
 
         remaining = int(args.iterations_per_worker)
         stage = 0
-        snapshot_dir = Path(args.output_dir) / "_worker_snapshots"
-        snapshot_dir.mkdir(parents=True, exist_ok=True)
         while remaining > 0:
             stage += 1
             chunk = min(int(args.merge_every), remaining)
@@ -216,8 +203,6 @@ def train_worker(worker_id, args, result_queue, command_queue):
             train_seconds = time.perf_counter() - stage_start
             remaining -= chunk
             own_changes = trainer.table.take_delta()
-            snapshot_path = snapshot_dir / f"worker_{worker_id:03d}_stage_{stage:06d}.pkl.gz"
-            _save_snapshot(StrategyTable(own_changes), snapshot_path)
             result_queue.put(
                 {
                     "type": "snapshot",
@@ -233,11 +218,13 @@ def train_worker(worker_id, args, result_queue, command_queue):
                     "worker_infosets_per_second": (
                         len(own_changes) / train_seconds if train_seconds > 0 else 0.0
                     ),
-                    "snapshot_path": str(snapshot_path),
+                    # Only what changed since the last sync: small enough to
+                    # send through the queue directly.
+                    "changes": own_changes,
                 }
             )
             if remaining > 0:
-                everyone = _load_snapshot(command_queue.get())
+                everyone = command_queue.get()
                 add_table_into(trainer.table, everyone)
                 add_table_into(trainer.table, own_changes, sign=-1.0)
                 del everyone, own_changes
@@ -367,10 +354,6 @@ def run(args, resume_from_path=None):
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     write_run_manifest(output_dir, args)
-    snapshot_dir = output_dir / "_worker_snapshots"
-    snapshot_dir.mkdir(parents=True, exist_ok=True)
-    for stale_snapshot in snapshot_dir.glob("*.pkl.gz"):
-        stale_snapshot.unlink()
 
     stages = int(math.ceil(args.iterations_per_worker / args.merge_every))
     context = multiprocessing_context()
@@ -416,29 +399,18 @@ def run(args, resume_from_path=None):
 
     writer = open_writer(default_logdir(output_dir))
     print(f"TensorBoard logs: {default_logdir(output_dir)}")
-    previous_sum_path = None
     try:
         for stage in range(1, stages + 1):
             stage_sum = StrategyTable()
             snapshots_meta = []
             while len(snapshots_meta) < args.workers:
                 message = next_message()
-                snapshot_path = Path(message.pop("snapshot_path"))
-                add_table_into(stage_sum, _load_snapshot(snapshot_path))
-                snapshot_path.unlink(missing_ok=True)
+                add_table_into(stage_sum, message.pop("changes"))
                 snapshots_meta.append(message)
             add_table_into(shared_table, stage_sum)
-
-            # Every worker applied the previous sum before training this stage.
-            if previous_sum_path is not None:
-                previous_sum_path.unlink(missing_ok=True)
-                previous_sum_path = None
             if stage < stages:
-                sum_path = snapshot_dir / f"all_workers_stage_{stage:06d}.pkl.gz"
-                _save_snapshot(stage_sum, sum_path)
                 for command_queue in command_queues:
-                    command_queue.put(str(sum_path))
-                previous_sum_path = sum_path
+                    command_queue.put(stage_sum.data)
             del stage_sum
 
             if stage % args.checkpoint_every == 0 or stage == stages:
@@ -470,8 +442,6 @@ def run(args, resume_from_path=None):
         raise
     finally:
         writer.close()
-        if previous_sum_path is not None:
-            previous_sum_path.unlink(missing_ok=True)
 
     for worker in workers:
         worker.join()
@@ -540,8 +510,8 @@ def main():
         "--bet-sizing",
         choices=BET_SIZINGS,
         default=None,
-        help="Postflop bet sizing. Defaults to v2 for new runs and to the "
-             "checkpoint's own sizing with --resume-from.",
+        help=f"Bet sizing. Defaults to {DEFAULT_BET_SIZING} for new runs and to "
+             "the checkpoint's own sizing with --resume-from.",
     )
     parser.add_argument(
         "--resume-from",
@@ -610,7 +580,7 @@ def main():
         if args.start_iteration is None:
             args.start_iteration = 0
     if args.bet_sizing is None:
-        args.bet_sizing = "v2"
+        args.bet_sizing = DEFAULT_BET_SIZING
     print(f"Bet sizing: {args.bet_sizing}")
 
     # A resumed table keeps the rules it was trained under; new runs use const.py.

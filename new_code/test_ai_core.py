@@ -398,7 +398,8 @@ def _random_openspiel_decisions(hands, seed):
 
     game = pyspiel.load_game("universal_poker", game_config)
     rng = np.random.default_rng(seed)
-    walker = PreflopActionAbstractor(big_blind=100, starting_stack=10_000)
+    # v2 has no raise cap, so walking with it reaches long raise chains.
+    walker = PreflopActionAbstractor(big_blind=100, starting_stack=10_000, bet_sizing="v2")
     for _ in range(hands):
         state = game.new_initial_state()
         while not state.is_terminal():
@@ -420,12 +421,13 @@ def test_postflop_bet_sizing_is_legal_and_pot_relative():
     except ImportError:
         print("skipped: pyspiel not installed")
         return
-    v2 = PreflopActionAbstractor(big_blind=100, starting_stack=10_000)
+    v2 = PreflopActionAbstractor(big_blind=100, starting_stack=10_000, bet_sizing="v2")
+    v3 = PreflopActionAbstractor(big_blind=100, starting_stack=10_000, bet_sizing="v3")
     legacy = PreflopActionAbstractor(big_blind=100, starting_stack=10_000, bet_sizing="legacy")
     postflop_checked = 0
     for state, parsed in _random_openspiel_decisions(hands=300, seed=7):
         legal = set(state.legal_actions())
-        for abstractor in (v2, legacy):
+        for abstractor in (v2, v3, legacy):
             for spec in abstractor.select_action_specs_direct(parsed):
                 assert int(spec) in legal, (abstractor.bet_sizing, spec, parsed)
         specs = {s.key: int(s) for s in v2.select_action_specs_direct(parsed)}
@@ -548,6 +550,30 @@ def test_trainer_converges_like_openspiel_reference_on_leduc():
     assert exploitability.exploitability(game, policy) < 0.7
 
 
+def test_v3_caps_raises_per_street():
+    try:
+        import pyspiel  # noqa: F401
+    except ImportError:
+        print("skipped: pyspiel not installed")
+        return
+    from ai import POSTFLOP_RAISE_CAP, PREFLOP_RAISE_CAP, _raise_amounts
+
+    v3 = PreflopActionAbstractor(big_blind=100, starting_stack=10_000, bet_sizing="v3")
+    capped_seen = 0
+    for _, parsed in _random_openspiel_decisions(hands=400, seed=5):
+        street = (parsed.get("Sequences") or "").rsplit("|", 1)[-1]
+        raises = len(_raise_amounts(street))
+        keys = {spec.key for spec in v3.select_action_specs_direct(parsed)}
+        cap = PREFLOP_RAISE_CAP if int(parsed["Round"]) == 0 else POSTFLOP_RAISE_CAP
+        if raises >= cap:
+            assert keys <= {"fold", "call", "jam"}, (keys, parsed)
+            capped_seen += 1
+        elif int(parsed["Round"]) > 0 and raises > 0:
+            # Facing a postflop bet: a pot-sized raise or a jam, no min-raises.
+            assert "min_raise" not in keys, (keys, parsed)
+    assert capped_seen > 20, capped_seen
+
+
 if __name__ == "__main__":
     test_strategy_table_regret_matching()
     test_average_strategy_uses_linear_weight()
@@ -573,4 +599,5 @@ if __name__ == "__main__":
     test_table_metrics_regret_bound()
     test_default_path_points_into_new_code()
     test_trainer_converges_like_openspiel_reference_on_leduc()
+    test_v3_caps_raises_per_street()
     print("ai core tests passed")

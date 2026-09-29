@@ -176,24 +176,25 @@ def _classify_cards(private_tuple, public_tuple):
 BRACKET_RE = re.compile(r"\[(.*?)\]")
 PREFLOP_SEQUENCE_TOKEN_RE = re.compile(r"r\d+|[cf]")
 
-@lru_cache(maxsize=131072)
 def parse_poker_string(poker_string):
-    matches = BRACKET_RE.findall(poker_string)
-    
-    # Initialize an empty dictionary to store the parsed information
+    """Parse "[Key: value][Key: value]..." info strings into a dict.
+
+    Not cached: info strings include the cards, so they almost never repeat.
+    """
     parsed_data = {}
-    
-    # Iterate through the matches and parse them into the dictionary
-    for match in matches:
+    if not poker_string.startswith("[") or not poker_string.endswith("]"):
+        return parsed_data
+
+    for match in poker_string[1:-1].split("]["):
         # Split the match into key and value using the first colon or space
         if ":" in match:
             key, value = match.split(":", 1)
         else:
             key, value = match.split(" ", 1)
-        
+
         key = key.strip()
         value = value.strip()
-        
+
         # Handle specific cases for Money, Private, and Public
         if key == "Money":
             parsed_data[key] = list(map(int, value.split()))
@@ -201,14 +202,11 @@ def parse_poker_string(poker_string):
             parsed_data[key] = [value[i:i+2] for i in range(0, len(value), 2)]
         elif key == "Public":
             parsed_data[key] = [value[i:i+2] for i in range(0, len(value), 2)] if value else []
+        elif value.isdigit():
+            parsed_data[key] = int(value)
         else:
-            # Convert numeric values to integers if possible
-            if value.isdigit():
-                parsed_data[key] = int(value)
-            else:
-                parsed_data[key] = value
-    
-    
+            parsed_data[key] = value
+
     return parsed_data
 
 def missing_for_straight_with_debug(rank_counts):
@@ -292,7 +290,8 @@ def abstractbettinge(log, round_state, active): #abstracts raises into floor(mat
     return f"[{result}]"
 
 # Example usage
-@lru_cache(maxsize=131072)
+# Not cached: pot-relative bet sizes make nearly every postflop betting state
+# unique (a cache here hit 6.5% of the time).
 def _postflop_context_cached(sequences, pot, money_tuple, player, street):
     """
     Postflop betting infoset key component.  All args are hashable for caching.

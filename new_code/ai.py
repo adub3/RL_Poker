@@ -5,6 +5,7 @@ import os
 import sys
 from bisect import bisect_left, bisect_right
 from dataclasses import dataclass
+from functools import lru_cache
 
 import numpy as np
 
@@ -22,8 +23,15 @@ DEFAULT_POT_FRACTIONS = (1 / 3, 1 / 2, 3 / 4, 1.0, 1.5, 2.0)
 DEFAULT_STACK_FRACTIONS = (1 / 4, 1 / 2, 3 / 4)
 # "legacy" is the postflop sizing used before the fix; tables trained with it
 # only line up with that sizing. Runs record theirs in run_manifest.json.
-BET_SIZINGS = ("legacy", "v2")
-DEFAULT_BET_SIZING = "v2"
+BET_SIZINGS = ("legacy", "v2", "v3")
+DEFAULT_BET_SIZING = "v3"
+# v3 caps raises per street; after the cap a player can only fold, call or
+# jam. Without a cap, min-raise wars made most of the v2 tree (68% of
+# postflop infosets had 3+ raises on the current street).
+PREFLOP_RAISE_CAP = 4   # open, 3-bet, 4-bet, 5-bet
+POSTFLOP_RAISE_CAP = 3  # bet, raise, re-raise
+# v3 raise sizes when facing a bet on a postflop street.
+POSTFLOP_FACING_BET_FRACTIONS = (("bet_pot", 1.0),)
 POSTFLOP_POT_FRACTIONS = (
     ("bet_33", 1 / 3),
     ("bet_50", 1 / 2),
@@ -574,7 +582,9 @@ def _raise_range_from_seq(seq_str, big_blind, max_raise, no_bet_baseline=0):
     return min_raise, max_raise, last_top
 
 
+@lru_cache(maxsize=65536)
 def _raise_amounts(seq_str):
+    """Chip amounts of the raises in a sequence string, in order (a tuple)."""
     amounts = []
     amt = ""
     for ch in seq_str:
@@ -586,7 +596,7 @@ def _raise_amounts(seq_str):
             amt = ""
     if amt:
         amounts.append(int(amt))
-    return amounts
+    return tuple(amounts)
 
 
 def _street_raise_range(parsed, big_blind, starting_stack):
@@ -600,7 +610,7 @@ def _street_raise_range(parsed, big_blind, starting_stack):
     streets = (parsed.get("Sequences", "") or "").split("|")
     earlier = _raise_amounts("|".join(streets[:-1]))
     street_start = earlier[-1] if earlier else big_blind
-    tops = [street_start] + _raise_amounts(streets[-1])
+    tops = (street_start,) + _raise_amounts(streets[-1])
     last_top = tops[-1]
     increment = max(big_blind, last_top - tops[-2]) if len(tops) > 1 else big_blind
     return min(last_top + increment, starting_stack), starting_stack, last_top
@@ -856,6 +866,11 @@ class PreflopActionAbstractor(ActionAbstractor):
         self.big_blind = int(big_blind)
         self.starting_stack = int(starting_stack)
         self.bet_sizing = bet_sizing
+        # Preflop menus depend only on the betting so far (never the cards) and
+        # repeat constantly, so they are cached. Postflop, pot-relative sizes
+        # make nearly every betting state unique, so caching there only costs
+        # memory.
+        self._preflop_spec_cache = {}
 
     def select_actions(self, state, legal_actions, parsed=None):
         return [
@@ -965,11 +980,21 @@ class PreflopActionAbstractor(ActionAbstractor):
 
         Dispatches to preflop or postflop helper based on the Round field.
         Raise amounts are concrete chip totals clamped to [min_raise, max_raise],
-        derived from the parsed info string alone.
+        derived from the parsed info string alone. Returns a tuple, which
+        preflop is cached and shared between callers.
         """
-        if int(parsed.get("Round", 0) or 0) == 0:
-            return self._preflop_specs_direct(parsed)
-        return self._postflop_specs_direct(parsed)
+        if int(parsed.get("Round", 0) or 0) != 0:
+            return tuple(self._postflop_specs_direct(parsed))
+        key = (
+            parsed.get("Player", 0),
+            tuple(parsed.get("Money") or ()),
+            parsed.get("Sequences", ""),
+        )
+        specs = self._preflop_spec_cache.get(key)
+        if specs is None:
+            specs = tuple(self._preflop_specs_direct(parsed))
+            self._preflop_spec_cache[key] = specs
+        return specs
 
     def _preflop_specs_direct(self, parsed):
         money = parsed.get("Money") or []
@@ -988,6 +1013,10 @@ class PreflopActionAbstractor(ActionAbstractor):
             parsed, self.big_blind, self.starting_stack
         )
         has_raises = max_raise > last_top
+        capped = (
+            self.bet_sizing == "v3"
+            and len(_raise_amounts(parsed.get("Sequences", "") or "")) >= PREFLOP_RAISE_CAP
+        )
 
         specs = []
         seen = set()
@@ -997,7 +1026,9 @@ class PreflopActionAbstractor(ActionAbstractor):
         specs.append(DecisionAction("call", 1))
         seen.add(1)
 
-        if has_raises:
+        if has_raises and capped:
+            specs.append(DecisionAction("jam", max_raise))
+        elif has_raises:
             specs.append(DecisionAction("min_raise", min_raise))
             seen.add(min_raise)
             for label, target in self._preflop_targets(parsed):
@@ -1035,13 +1066,23 @@ class PreflopActionAbstractor(ActionAbstractor):
         specs.append(DecisionAction("call", 1))
         seen.add(1)
 
-        if max_raise > last_top:
-            specs.append(DecisionAction("min_raise", min_raise))
-            seen.add(min_raise)
+        v3 = self.bet_sizing == "v3"
+        raises_this_street = len(
+            _raise_amounts((parsed.get("Sequences", "") or "").rsplit("|", 1)[-1])
+        )
+        if max_raise > last_top and v3 and raises_this_street >= POSTFLOP_RAISE_CAP:
+            specs.append(DecisionAction("jam", max_raise))
+        elif max_raise > last_top:
+            fractions = POSTFLOP_POT_FRACTIONS
+            if v3 and raises_this_street > 0:
+                fractions = POSTFLOP_FACING_BET_FRACTIONS
+            else:
+                specs.append(DecisionAction("min_raise", min_raise))
+                seen.add(min_raise)
             # Sizes are fractions of the pot after calling, added on top of the
             # amount needed to call (last_top is also each player's total then).
             pot_after_call = 2 * last_top
-            for label, fraction in POSTFLOP_POT_FRACTIONS:
+            for label, fraction in fractions:
                 amount = last_top + int(round(fraction * pot_after_call))
                 amount = max(min_raise, min(max_raise, amount))
                 if amount not in seen:

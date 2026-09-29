@@ -157,10 +157,16 @@ working unchanged; start a new run to get the current rules.
   preflop and the big blind first on later streets. Older runs used `"1"`,
   where the big blind acted first on every street; runs with no manifest are
   assumed to be those.
-- Bet sizing (`bet_sizing`): `v2`, the current default, sizes pot-fraction
-  bets on top of the chips already committed, and `min_raise` is the real
-  minimum on every street. `legacy` is the sizing used before that fix; runs
-  without a `bet_sizing` entry used it.
+- Bet sizing (`bet_sizing`):
+  - `v3` (default for new runs): v2's sizes with raise caps. After 4
+    preflop raises or 3 raises on a postflop street, a player can only fold,
+    call or jam, and facing a postflop bet the raise options are pot-sized or
+    jam. Without caps, min-raise wars made up most of the v2 tree; v3 trains
+    about 5x faster and its table grows about 4x more slowly.
+  - `v2`: pot-fraction bets are sized on top of the chips already committed,
+    and `min_raise` is the real minimum on every street. No raise cap.
+  - `legacy`: the sizing used before the v2 fix; runs without a `bet_sizing`
+    entry used it.
 
 ## Training metrics
 
