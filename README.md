@@ -88,8 +88,9 @@ only listens on the server itself; the SSH tunnel is what lets you in.
 Charts to watch:
 
 - `convergence/avg_regret_bound`: should trend down.
-- `exploitability/lbr_bb100`: first point an hour or two after boot, then
-  every 6 hours. Should trend down; see "Measuring exploitability".
+- `exploitability/lbr_lower_bound95`: the bot is at least this exploitable,
+  with 95% confidence. First point an hour or two after boot, then every 6
+  hours. Should trend down; see "Measuring exploitability".
 - `system/memory_available_gb`: memory grows with the table, since each
   worker holds a full copy. If it nears 0, set a lower `WORKERS` in
   `deploy/oracle/train_forever.sh` and restart training.
@@ -155,7 +156,15 @@ the same cards) and differ in the raise sizes they consider:
   bet-size buckets, plus all-in. This finds leaks in how the bot maps sizes it
   didn't train on.
 
-The headline number is the best variant. The bot reads raises it never
+Two headline numbers: `exploitability_bb100` is the best variant's mean, and
+`lower_bound95_bb100` is the largest variant mean minus its standard error
+times a Bonferroni-corrected z, so with 95% confidence the bot is at least that
+exploitable (picking the best of several noisy means alone biases it up).
+Hands where both players are all-in are scored by their expected result over
+the remaining board cards rather than the one board dealt, which is unbiased
+and roughly halves the interval; `--no-allin-ev` turns this off.
+
+The bot reads raises it never
 trained on through action translation (`new_code/translation.py`): each
 off-menu raise counts as a mix of the two nearest menu sizes, weighted by the
 pseudo-harmonic mapping, instead of a betting line with no table entry.
@@ -182,7 +191,7 @@ working unchanged; start a new run to get the current rules.
   where the big blind acted first on every street; runs with no manifest are
   assumed to be those.
 - Bet sizing (`bet_sizing`):
-  - `v3` (default for new runs): v2's sizes with raise caps. After 4
+  - `v3`: v2's sizes with raise caps. After 4
     preflop raises or 3 raises on a postflop street, a player can only fold,
     call or jam, and facing a postflop bet the raise options are pot-sized or
     jam. Without caps, min-raise wars made up most of the v2 tree; v3 trains
@@ -191,6 +200,13 @@ working unchanged; start a new run to get the current rules.
     and `min_raise` is the real minimum on every street. No raise cap.
   - `legacy`: the sizing used before the v2 fix; runs without a `bet_sizing`
     entry used it.
+  - `v4` (default for new runs): v3's sizes and caps with fixed postflop
+    betting keys. Earlier keys treated the whole-hand totals in OpenSpiel's
+    `Sequences` and `Pot` as amounts for the street, so every first bet on a
+    street read as pot-sized, from a min-bet to an all-in. v4 labels each
+    raise by its size over the call as a fraction of the pot after calling
+    (the measure the menu uses), marks real all-ins, and adds the
+    stack-to-pot ratio at the start of the street.
 
 ## Training metrics
 

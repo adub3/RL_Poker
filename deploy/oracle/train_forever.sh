@@ -36,7 +36,7 @@ while true; do
     ${resume[@]+"${resume[@]}"}
 
   # Keep the newest checkpoints (and their exported strategy DBs). Results for
-  # older ones are already in exploitability_greedy_br.json and TensorBoard.
+  # older ones are already in exploitability_lbr.json and TensorBoard.
   checkpoints=()
   while IFS= read -r path; do checkpoints+=("$path"); done \
     < <(ls "$RUN_DIR"/mccfr_table_iter_*.json.gz | sort)

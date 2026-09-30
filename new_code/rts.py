@@ -164,7 +164,7 @@ class RealTimeSearch:
         if cached is not None:
             return cached
         parsed = parse_poker_string(iss)
-        infoset = _infoset_from_parsed(parsed)
+        infoset = _infoset_from_parsed(parsed, self._abstractor.bet_sizing)
         actions = self._abstractor.select_action_specs_direct(parsed)
         result = (infoset, actions)
         self._isa_cache[iss] = result

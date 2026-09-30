@@ -23,11 +23,13 @@ DEFAULT_POT_FRACTIONS = (1 / 3, 1 / 2, 3 / 4, 1.0, 1.5, 2.0)
 DEFAULT_STACK_FRACTIONS = (1 / 4, 1 / 2, 3 / 4)
 # "legacy" is the postflop sizing used before the fix; tables trained with it
 # only line up with that sizing. Runs record theirs in run_manifest.json.
-BET_SIZINGS = ("legacy", "v2", "v3")
-DEFAULT_BET_SIZING = "v3"
+BET_SIZINGS = ("legacy", "v2", "v3", "v4")
+DEFAULT_BET_SIZING = "v4"
 # v3 caps raises per street; after the cap a player can only fold, call or
 # jam. Without a cap, min-raise wars made most of the v2 tree (68% of
 # postflop infosets had 3+ raises on the current street).
+# Sizings that cap raises per street (v4 is v3's menu with fixed postflop keys).
+RAISE_CAP_SIZINGS = ("v3", "v4")
 PREFLOP_RAISE_CAP = 4   # open, 3-bet, 4-bet, 5-bet
 POSTFLOP_RAISE_CAP = 3  # bet, raise, re-raise
 # v3 raise sizes when facing a bet on a postflop street.
@@ -110,12 +112,14 @@ def _action_keys(actions):
     return [_action_key(action) for action in actions]
 
 
-def _infoset_from_parsed(parsed):
+def _infoset_from_parsed(parsed, bet_sizing=DEFAULT_BET_SIZING):
+    """Abstract infoset key. `bet_sizing` must be the run's: v4 changed the
+    postflop betting part of the key."""
     cards = abstractioncards_street_aware(parsed)
     if not parsed.get("Public"):
         context = preflop_betting_context(parsed)
     else:
-        context = postflop_betting_context(parsed)
+        context = postflop_betting_context(parsed, bet_sizing)
     return sys.intern(cards + context)
 
 
@@ -175,9 +179,9 @@ def _action_sort_key(action):
         return (1, key)
 
 
-def get_infostate(state):
+def get_infostate(state, bet_sizing=DEFAULT_BET_SIZING):
     parsed = parse_poker_string(state.information_state_string())
-    return _infoset_from_parsed(parsed)
+    return _infoset_from_parsed(parsed, bet_sizing)
 
 
 def preflop_hand_strength(private_cards):
@@ -1014,7 +1018,7 @@ class PreflopActionAbstractor(ActionAbstractor):
         )
         has_raises = max_raise > last_top
         capped = (
-            self.bet_sizing == "v3"
+            self.bet_sizing in RAISE_CAP_SIZINGS
             and len(_raise_amounts(parsed.get("Sequences", "") or "")) >= PREFLOP_RAISE_CAP
         )
 
@@ -1066,7 +1070,7 @@ class PreflopActionAbstractor(ActionAbstractor):
         specs.append(DecisionAction("call", 1))
         seen.add(1)
 
-        v3 = self.bet_sizing == "v3"
+        v3 = self.bet_sizing in RAISE_CAP_SIZINGS
         raises_this_street = len(
             _raise_amounts((parsed.get("Sequences", "") or "").rsplit("|", 1)[-1])
         )
@@ -1193,6 +1197,7 @@ class LinearMCCFRTrainer:
         elif action_abstractor is not None and action_abstractor.rng is None:
             action_abstractor.rng = self.rng
         self.action_abstractor = action_abstractor
+        self._bet_sizing = getattr(action_abstractor, "bet_sizing", DEFAULT_BET_SIZING)
         self.cutoff_street = cutoff_street
         # Linear weights follow overall training progress: iteration t of this
         # trainer counts as start_iteration + t * iteration_stride. Parallel
@@ -1413,7 +1418,7 @@ class LinearMCCFRTrainer:
     def _infoset(self, state, parsed):
         if self.infoset_fn is get_infostate:
             try:
-                return _infoset_from_parsed(parsed)
+                return _infoset_from_parsed(parsed, self._bet_sizing)
             except Exception:
                 pass
         return self.infoset_fn(state)

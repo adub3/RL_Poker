@@ -22,6 +22,7 @@ from lbr_exploitability import (           # noqa: E402
     COMBO_NAMES,
     COMBOS,
     LocalBestResponse,
+    allin_value,
     betting_context,
 )
 from translation import ActionTranslator, pseudo_harmonic, raise_fraction  # noqa: E402
@@ -46,7 +47,7 @@ class PairsContinueBlueprint:
 
 
 def lbr(blueprint, fractions=(1.0,), translate=True):
-    return LocalBestResponse(GAME, blueprint, "v3", fractions, equity_samples=100,
+    return LocalBestResponse(GAME, blueprint, "v4", fractions, equity_samples=100,
                              translate=translate)
 
 
@@ -82,13 +83,14 @@ def test_card_keys_match_bot_infosets():
         parsed = parse_poker_string(state.information_state_string(0))
         public = tuple(parsed.get("Public") or ())
         keys, index = player.card_keys(public)
-        context = betting_context(parsed)
+        context = betting_context(parsed, player.bet_sizing)
         board = {CARD_ID[card] for card in public}
         for i in rng.choice(len(COMBOS), 40, replace=False):
             if board & set(COMBOS[i]):
                 continue
             for private in (COMBO_NAMES[i], COMBO_NAMES[i][::-1]):
-                expected = _infoset_from_parsed({**parsed, "Private": list(private)})
+                expected = _infoset_from_parsed({**parsed, "Private": list(private)},
+                                                player.bet_sizing)
                 assert keys[index[i]] + context == expected, (keys[index[i]], expected)
 
 
@@ -151,8 +153,20 @@ def test_beats_uniform_bot():
     assert stats["bot_missing"] == stats["bot_decisions"]
 
 
+def test_allin_value():
+    ids = lambda *cards: tuple(CARD_ID[c] for c in cards)  # noqa: E731
+    rng = np.random.default_rng(0)
+    # AA vs KK preflop wins about 82%: EV about (2 * 0.82 - 1) * 10000.
+    value = allin_value(ids("Ah", "As"), ids("Kc", "Kd"), (), 10_000, rng, samples=20_000)
+    assert abs(value - 6_400) < 250, value
+    # Exact on the turn: the nut flush draw against a set of kings. 9 hearts
+    # are left, but 7h and Kh fill the set up, so 7 of 44 river cards win.
+    value = allin_value(ids("Ah", "5h"), ids("Kc", "Kd"), ids("2h", "9h", "Ks", "7c"), 1_000, rng)
+    assert abs(value - (2 * 7 / 44 - 1) * 1_000) < 1e-9, value
+
+
 def translator():
-    abstractor = PreflopActionAbstractor(big_blind=100, starting_stack=10_000, bet_sizing="v3")
+    abstractor = PreflopActionAbstractor(big_blind=100, starting_stack=10_000, bet_sizing="v4")
     return ActionTranslator(GAME, abstractor, parse_poker_string)
 
 
@@ -228,6 +242,7 @@ if __name__ == "__main__":
     test_range_update_follows_blueprint()
     test_equity()
     test_beats_uniform_bot()
+    test_allin_value()
     test_pseudo_harmonic()
     test_menu_lines_are_not_translated()
     test_off_menu_raise_splits_between_neighbours()

@@ -362,12 +362,69 @@ def _postflop_context_cached(sequences, pot, money_tuple, player, street):
     return f"[pos:P{player}][st:{street}][{seq_str}]"
 
 
-def postflop_betting_context(data_dict):
+# v4 bet-size buckets: raise over the call as a fraction of the pot after
+# calling, the same measure the action menu uses. Boundaries are the geometric
+# midpoints between the menu's sizes (1/3, 1/2, pot, 2x pot).
+_V4_SIZE_BUCKETS = ((math.sqrt(1 / 6), "s"), (math.sqrt(1 / 2), "h"), (math.sqrt(2), "p"))
+# Stack-to-pot ratio at the start of the street: < 1, < 3, < 8, and deeper.
+_V4_SPR_BUCKETS = (1, 3, 8)
+
+
+def _postflop_context_v4(sequences, player, street, big_blind, starting_stack):
+    """
+    Postflop betting infoset key component for v4 runs.
+
+    Sequences hold whole-hand totals (rN = N chips committed in the hand), and
+    both players start each street level with the last raise of earlier
+    streets (the big blind if there was none). Labels:
+      x = check  c = call  f = fold
+      rs = up to ~40% pot  rh = up to ~70%  rp = up to ~1.4x  ro = bigger
+      rj = all-in
+    plus the stack-to-pot ratio bucket at the start of the street.
+    """
+    streets = sequences.split("|")
+    earlier = [int(token[1:]) for token in PREFLOP_SEQUENCE_TOKEN_RE.findall("|".join(streets[:-1]))
+               if token[0] == "r"]
+    start = earlier[-1] if earlier else big_blind
+    spr = (starting_stack - start) / (2 * start)
+    spr_bucket = sum(spr >= bound for bound in _V4_SPR_BUCKETS)
+
+    result = []
+    commits = [start, start]
+    cur = 0
+    for token in PREFLOP_SEQUENCE_TOKEN_RE.findall(streets[-1]):
+        if token == "f":
+            result.append("f")
+            break
+        if token == "c":
+            result.append("x" if commits[cur] == commits[1 - cur] else "c")
+            commits[cur] = commits[1 - cur]
+        else:
+            amount = int(token[1:])
+            if amount >= starting_stack:
+                size = "j"
+            else:
+                fraction = (amount - commits[1 - cur]) / (2 * commits[1 - cur])
+                size = next((label for bound, label in _V4_SIZE_BUCKETS if fraction < bound), "o")
+            result.append(f"r{size}")
+            commits[cur] = amount
+        cur = 1 - cur
+
+    seq_str = "".join(result) if result else "open"
+    return f"[pos:P{player}][st:{street}][spr:{spr_bucket}][{seq_str}]"
+
+
+def postflop_betting_context(data_dict, bet_sizing=None, big_blind=100, starting_stack=10_000):
+    """Postflop betting key. Runs before v4 keep the original (size-blind) keys:
+    they read every first bet on a street as pot-sized, since they treated the
+    whole-hand totals in Sequences and Pot as amounts for the street."""
     sequences = data_dict.get("Sequences", "") or ""
-    pot = int(data_dict.get("Pot", 0) or 0)
-    money = tuple(int(m) for m in (data_dict.get("Money") or [0, 0]))
     player = int(data_dict.get("Player", 0) or 0)
     street = int(data_dict.get("Round", 1) or 1)
+    if bet_sizing == "v4":
+        return _postflop_context_v4(sequences, player, street, big_blind, starting_stack)
+    pot = int(data_dict.get("Pot", 0) or 0)
+    money = tuple(int(m) for m in (data_dict.get("Money") or [0, 0]))
     return _postflop_context_cached(sequences, pot, money, player, street)
 
 

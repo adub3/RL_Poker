@@ -3,7 +3,11 @@ import tempfile
 
 import numpy as np
 
-from abstraction import abstractioncards_street_aware, preflop_betting_context
+from abstraction import (
+    abstractioncards_street_aware,
+    postflop_betting_context,
+    preflop_betting_context,
+)
 from ai import (
     ActionAbstractor,
     DecisionAction,
@@ -574,6 +578,42 @@ def test_v3_caps_raises_per_street():
     assert capped_seen > 20, capped_seen
 
 
+def _flop_context_after(preflop, flop_actions, bet_sizing):
+    """Postflop betting key at the next decision after the given actions."""
+    import pyspiel
+
+    game = pyspiel.load_game("universal_poker", game_config)
+    state = game.new_initial_state()
+    for card in (0, 5, 50, 45):
+        state.apply_action(card)
+    for action in preflop:
+        state.apply_action(action)
+    for card in (35, 18, 9):
+        state.apply_action(card)
+    for action in flop_actions:
+        state.apply_action(action)
+    parsed = parse_poker_string(state.information_state_string(state.current_player()))
+    return postflop_betting_context(parsed, bet_sizing)
+
+
+def test_v4_postflop_context_reads_bet_sizes():
+    # Raised pot: both in for 300, so the pot after calling a bet is 600 plus
+    # the bet. 1/3 pot -> to 500, 1/2 -> 600, pot -> 900, 2x -> 1500.
+    amounts = (500, 600, 900, 1500, 10000)
+    labels = {amount: _flop_context_after([300, 1], [amount], "v4") for amount in amounts}
+    assert [labels[a].rsplit("[", 1)[1] for a in amounts] == [
+        "rs]", "rh]", "rp]", "ro]", "rj]"]
+    assert "[spr:3]" in labels[900]
+    # The same pot bet after a 3-bet preflop (both in for 900): shallower SPR.
+    three_bet = _flop_context_after([300, 900, 1], [900 + 1800], "v4")
+    assert three_bet.endswith("[spr:2][rp]"), three_bet
+    # Facing a pot bet, a pot raise and a check-raise are labelled in order.
+    assert _flop_context_after([1, 1], [1, 300, 900], "v4").endswith("[xrprp]")
+    # Older runs keep their original keys, which could not tell sizes apart.
+    for amount in (500, 900, 10000):
+        assert _flop_context_after([300, 1], [amount], "v3").endswith("[rp]")
+
+
 if __name__ == "__main__":
     test_strategy_table_regret_matching()
     test_average_strategy_uses_linear_weight()
@@ -598,6 +638,7 @@ if __name__ == "__main__":
     test_linear_weight_total_matches_the_sum_of_weights()
     test_table_metrics_regret_bound()
     test_default_path_points_into_new_code()
+    test_v4_postflop_context_reads_bet_sizes()
     test_trainer_converges_like_openspiel_reference_on_leduc()
     test_v3_caps_raises_per_street()
     print("ai core tests passed")
