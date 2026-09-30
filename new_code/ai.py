@@ -23,13 +23,15 @@ DEFAULT_POT_FRACTIONS = (1 / 3, 1 / 2, 3 / 4, 1.0, 1.5, 2.0)
 DEFAULT_STACK_FRACTIONS = (1 / 4, 1 / 2, 3 / 4)
 # "legacy" is the postflop sizing used before the fix; tables trained with it
 # only line up with that sizing. Runs record theirs in run_manifest.json.
-BET_SIZINGS = ("legacy", "v2", "v3", "v4")
-DEFAULT_BET_SIZING = "v4"
+# v5 keeps v4's menu and betting keys and replaces the postflop card buckets
+# with board-relative strength and potential (card_buckets.py).
+BET_SIZINGS = ("legacy", "v2", "v3", "v4", "v5")
+DEFAULT_BET_SIZING = "v5"
 # v3 caps raises per street; after the cap a player can only fold, call or
 # jam. Without a cap, min-raise wars made most of the v2 tree (68% of
 # postflop infosets had 3+ raises on the current street).
 # Sizings that cap raises per street (v4 is v3's menu with fixed postflop keys).
-RAISE_CAP_SIZINGS = ("v3", "v4")
+RAISE_CAP_SIZINGS = ("v3", "v4", "v5")
 PREFLOP_RAISE_CAP = 4   # open, 3-bet, 4-bet, 5-bet
 POSTFLOP_RAISE_CAP = 3  # bet, raise, re-raise
 # v3 raise sizes when facing a bet on a postflop street.
@@ -115,7 +117,7 @@ def _action_keys(actions):
 def _infoset_from_parsed(parsed, bet_sizing=DEFAULT_BET_SIZING):
     """Abstract infoset key. `bet_sizing` must be the run's: v4 changed the
     postflop betting part of the key."""
-    cards = abstractioncards_street_aware(parsed)
+    cards = abstractioncards_street_aware(parsed, bet_sizing)
     if not parsed.get("Public"):
         context = preflop_betting_context(parsed)
     else:
@@ -1205,6 +1207,7 @@ class LinearMCCFRTrainer:
         self.start_iteration = int(start_iteration)
         self.iteration_stride = int(iteration_stride)
         self.iteration = 0
+        self._chance_priority = None
 
     def train(
         self,
@@ -1221,6 +1224,10 @@ class LinearMCCFRTrainer:
             weight = linear_weight(effective)
             for player in range(self.game.num_players()):
                 state = self.game.new_initial_state()
+                max_outcomes = getattr(self.game, "max_chance_outcomes", None)
+                self._chance_priority = (
+                    self.rng.random(max_outcomes()) if max_outcomes else None
+                )
                 self.mccfr(
                     state,
                     traverser=player,
@@ -1248,10 +1255,7 @@ class LinearMCCFRTrainer:
             return float(state.returns()[traverser])
 
         if state.is_chance_node():
-            outcomes_with_probs = state.chance_outcomes()
-            action_list, prob_list = zip(*outcomes_with_probs)
-            action = self.rng.choice(action_list, p=prob_list)
-            state.apply_action(int(action))
+            state.apply_action(self._sample_chance(state))
             return self.mccfr(state, traverser, linear_weight, allow_pruning)
 
         parsed = self._parsed_state(state) if parsed is None else parsed
@@ -1327,6 +1331,24 @@ class LinearMCCFRTrainer:
         self.table.batch_add_regret(infoset, batch_keys, deltas, floor=self.regret_floor)
 
         return node_value
+
+    def _sample_chance(self, state):
+        """Sample a chance outcome, dealing cards once per traversal.
+
+        Card deals are uniform, so each traversal draws one random priority
+        per card and every chance node takes its legal card with the lowest
+        priority. All branches of the traversal then see the same cards, as if
+        the deck were shuffled once at the start, which is how poker MCCFR
+        usually samples chance. Values stay unbiased, and card-dependent work
+        (like v5 card buckets) happens once per street, not once per branch.
+        Non-uniform chance events are sampled directly.
+        """
+        outcomes = state.chance_outcomes()
+        actions, probs = zip(*outcomes)
+        if self._chance_priority is not None and max(probs) - min(probs) < 1e-12:
+            priority = self._chance_priority
+            return int(min(actions, key=lambda action: priority[action]))
+        return int(self.rng.choice(actions, p=probs))
 
     def _should_prune_iteration(self):
         return (

@@ -200,7 +200,18 @@ working unchanged; start a new run to get the current rules.
     and `min_raise` is the real minimum on every street. No raise cap.
   - `legacy`: the sizing used before the v2 fix; runs without a `bet_sizing`
     entry used it.
-  - `v4` (default for new runs): v3's sizes and caps with fixed postflop
+  - `v5` (default for new runs): v4's betting menu and keys with new
+    postflop card buckets (`new_code/card_buckets.py`). A hand is bucketed by
+    how it plays on this board, not by its category: on the flop and turn by
+    its equity against a random hand (10 levels) and its potential, equity
+    minus current strength (drawing / neutral / vulnerable); on the river by
+    current strength (15 levels). Mid pair on K-9-2 rainbow and on J-T-9
+    two-tone now land in different buckets. On held-out deals the buckets
+    explain 98% of the variation in equity on the flop and turn and 100% of
+    river strength, against 64-66% for the old hand categories, with 27
+    buckets per street instead of 173-288. Boundaries come from
+    `tools/analysis/fit_card_buckets.py`; changing them changes every v5 key.
+  - `v4`: v3's sizes and caps with fixed postflop
     betting keys. Earlier keys treated the whole-hand totals in OpenSpiel's
     `Sequences` and `Pot` as amounts for the street, so every first bet on a
     street read as pot-sized, from a min-bet to an all-in. v4 labels each

@@ -421,7 +421,7 @@ def postflop_betting_context(data_dict, bet_sizing=None, big_blind=100, starting
     sequences = data_dict.get("Sequences", "") or ""
     player = int(data_dict.get("Player", 0) or 0)
     street = int(data_dict.get("Round", 1) or 1)
-    if bet_sizing == "v4":
+    if bet_sizing in ("v4", "v5"):
         return _postflop_context_v4(sequences, player, street, big_blind, starting_stack)
     pot = int(data_dict.get("Pot", 0) or 0)
     money = tuple(int(m) for m in (data_dict.get("Money") or [0, 0]))
@@ -578,9 +578,16 @@ def postflop_lossy_cards(data_dict):
     return abstractioncards(data_dict)
 
 
-def abstractioncards_street_aware(data_dict):
+def abstractioncards_street_aware(data_dict, bet_sizing=None):
+    """Card part of the infoset key. v5 runs use board-relative strength and
+    potential buckets postflop (card_buckets.py); earlier runs use the
+    hand-category buckets of _classify_cards."""
     if not data_dict.get("Public"):
         return preflop_lossless_cards(data_dict)
+    if bet_sizing == "v5":
+        from card_buckets import card_bucket
+
+        return card_bucket(tuple(data_dict.get("Private") or ()), tuple(data_dict["Public"]))
     return postflop_lossy_cards(data_dict)
 
 

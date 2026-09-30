@@ -614,6 +614,47 @@ def test_v4_postflop_context_reads_bet_sizes():
         assert _flop_context_after([300, 1], [amount], "v3").endswith("[rp]")
 
 
+def test_v5_card_buckets_are_board_relative():
+    try:
+        import card_buckets
+    except ImportError:
+        print("skipped: eval7 not installed")
+        return
+    bucket = card_buckets.card_bucket
+    # Mid pair depends on the board: 9s on K-9-2 rainbow vs on J-T-9 two-tone.
+    dry = bucket(("9d", "8c"), ("Kh", "9s", "2c"))
+    wet = bucket(("9d", "8c"), ("Jh", "Th", "9s"))
+    assert dry != wet, (dry, wet)
+    level = lambda key: int(key[2:key.index("p")])  # noqa: E731
+    assert level(dry) > level(wet), (dry, wet)
+    # Stronger hands get higher levels on the same board.
+    assert level(bucket(("Ah", "Kd"), ("Kh", "9s", "2c"))) > level(dry)
+    # A flush draw with overcards is "drawing" (potential class 2).
+    assert bucket(("Ah", "Qh"), ("7h", "4h", "2c")).endswith("p2]")
+    # Suit-isomorphic deals share a bucket.
+    assert bucket(("Ah", "Qh"), ("7h", "4h", "2c")) == bucket(("As", "Qs"), ("2d", "4s", "7s"))
+    # Rivers use strength levels only.
+    assert bucket(("Ah", "Kd"), ("Kh", "9s", "2c", "7d", "3s")).startswith("[R")
+
+
+def test_v5_keys_use_card_buckets_and_v4_betting():
+    try:
+        import card_buckets  # noqa: F401
+    except ImportError:
+        print("skipped: eval7 not installed")
+        return
+    from ai import _infoset_from_parsed
+
+    parsed = parse_poker_string(
+        "[Round 1][Player: 0][Pot: 200][Money: 9900 9900][Private: AhKd]"
+        "[Public: Ks7c2d][Sequences: cc|]"
+    )
+    v5 = _infoset_from_parsed(parsed, "v5")
+    v4 = _infoset_from_parsed(parsed, "v4")
+    assert v5.startswith("[F") and "[spr:" in v5, v5
+    assert v5[v5.index("[pos:"):] == v4[v4.index("[pos:"):], (v5, v4)
+
+
 if __name__ == "__main__":
     test_strategy_table_regret_matching()
     test_average_strategy_uses_linear_weight()
@@ -641,4 +682,6 @@ if __name__ == "__main__":
     test_v4_postflop_context_reads_bet_sizes()
     test_trainer_converges_like_openspiel_reference_on_leduc()
     test_v3_caps_raises_per_street()
+    test_v5_card_buckets_are_board_relative()
+    test_v5_keys_use_card_buckets_and_v4_betting()
     print("ai core tests passed")
