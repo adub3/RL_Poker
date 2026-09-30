@@ -202,15 +202,20 @@ working unchanged; start a new run to get the current rules.
     entry used it.
   - `v5` (default for new runs): v4's betting menu and keys with new
     postflop card buckets (`new_code/card_buckets.py`). A hand is bucketed by
-    how it plays on this board, not by its category: on the flop and turn by
-    its equity against a random hand (10 levels) and its potential, equity
-    minus current strength (drawing / neutral / vulnerable); on the river by
-    current strength (15 levels). Mid pair on K-9-2 rainbow and on J-T-9
-    two-tone now land in different buckets. On held-out deals the buckets
-    explain 98% of the variation in equity on the flop and turn and 100% of
-    river strength, against 64-66% for the old hand categories, with 27
-    buckets per street instead of 173-288. Boundaries come from
-    `tools/analysis/fit_card_buckets.py`; changing them changes every v5 key.
+    how it plays on this board, not by its category, using three features:
+    equity against a random hand, equity against a strong range (opponent
+    hands whose made hand is in the top 40% on this board), and potential
+    (equity minus current strength: outs to improve, or cards that hurt).
+    River buckets use current strength against both ranges. Hands are grouped
+    by k-means into 150 buckets on the flop and turn and 100 on the river,
+    numbered by strength (`card_bucket_centroids.json`, fitted by
+    `tools/analysis/fit_card_buckets.py`; refitting changes every v5 key).
+    On held-out deals the buckets explain 99% of the variation in equity
+    against a strong range on the flop and turn (old hand categories:
+    66-70%), and the spread inside the strongest buckets is about 6x
+    smaller, so sets and second pair no longer share a bucket. Computing a
+    bucket costs about 2 ms per new hand and board, so v5 trains at about
+    half v4's speed.
   - `v4`: v3's sizes and caps with fixed postflop
     betting keys. Earlier keys treated the whole-hand totals in OpenSpiel's
     `Sequences` and `Pot` as amounts for the street, so every first bet on a

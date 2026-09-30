@@ -3,17 +3,27 @@ Board-relative postflop card buckets (the card part of v5 infoset keys).
 
 A hand's bucket depends on how it plays on this board, not on its name:
 mid pair on K-8-2 rainbow and mid pair on J-T-9 two-tone land in different
-buckets. Two measures, both against a uniformly random opponent hand:
+buckets, and so do second pair and a set, which both crush a random hand.
 
-  strength  share of opponent hands the hand beats right now (ties count half),
-            exact over every opponent hand
-  equity    chance to win at showdown after the remaining board cards,
-            by simulation
+Features, all for this hand on this board:
 
-Flop and turn buckets combine an equity level with a potential class from
-equity - strength: "drawing" hands (outs to improve) gain equity from the
-cards to come, "vulnerable" made hands lose it. On the river no cards are
-left, so buckets are strength levels alone.
+  equity         chance to win at showdown against a random opponent hand
+                 after the remaining board cards (simulated)
+  strong equity  the same against a strong range: opponent hands whose made
+                 hand right now is in the top 40% on this board. This spreads
+                 out the strong end, where strategy differs most.
+  potential      equity minus current strength (the share of opponent hands
+                 beaten right now, exact): positive for draws with outs,
+                 negative for made hands the next cards can beat
+
+On the river no cards are left: the features are current strength against a
+random hand and against the strong range, both exact.
+
+Hands are grouped by k-means on these features (flop and turn 150 buckets,
+river 100), fitted once on random deals by tools/analysis/fit_card_buckets.py
+and stored in card_bucket_centroids.json. A bucket's number is its rank by
+strong equity, so higher numbers are stronger hands. Changing the centroids
+changes every v5 key, so trained v5 tables depend on that file.
 
 The simulation is seeded from the cards themselves, so the same hand and
 board always get the same bucket in every process and after every restart.
@@ -21,66 +31,70 @@ Buckets are cached on a suit-canonical form of the cards.
 """
 
 import itertools
-import random
+import json
 import zlib
-from bisect import bisect_right
 from functools import lru_cache
+from pathlib import Path
 
 import eval7
+import numpy as np
 
 _RANKS = "23456789TJQKA"
 _CARDS = {r + s: eval7.Card(r + s) for r in _RANKS for s in "cdhs"}
 
-EQUITY_SAMPLES = 600
-
-# Bucket boundaries, fitted on 8,000 random deals per street so each level
-# holds a similar share of hands (tools/analysis/fit_card_buckets.py, seed 0).
-# Changing them changes every v5 key, so trained v5 tables depend on them.
-EQUITY_EDGES = {  # 10 equity levels
-    3: (0.2458, 0.3117, 0.3675, 0.4258, 0.4833, 0.545, 0.6067, 0.6983, 0.8033),
-    4: (0.195, 0.27, 0.3381, 0.4083, 0.4829, 0.5575, 0.6453, 0.7483, 0.8468),
-}
-POTENTIAL_EDGES = {  # vulnerable (bottom 25%), neutral, drawing (top 25%)
-    3: (-0.1014, 0.087),
-    4: (-0.0624, 0.0465),
-}
-RIVER_STRENGTH_EDGES = (  # 15 strength levels
-    0.0614, 0.1217, 0.1823, 0.251, 0.329, 0.396, 0.453, 0.5273,
-    0.5965, 0.6727, 0.7343, 0.8025, 0.8758, 0.9384,
-)
+EQUITY_SAMPLES = 500
+STRONG_RANGE_SHARE = 0.40
+CENTROIDS_PATH = Path(__file__).with_name("card_bucket_centroids.json")
+_STREET_LETTER = {3: "F", 4: "T", 5: "R"}
 
 
-def hand_strength(hole, board):
-    """Share of opponent hands that `hole` beats on `board` now (ties = 1/2)."""
+def features(hole, board, rng):
+    """Feature vector for a deal: (equity, strong equity, potential) on the
+    flop and turn, (strength, strong strength) on the river."""
     dead = set(hole) | set(board)
-    rest = [card for name, card in _CARDS.items() if name not in dead]
+    rest = [name for name in _CARDS if name not in dead]
     board_cards = [_CARDS[c] for c in board]
-    mine = eval7.evaluate([_CARDS[c] for c in hole] + board_cards)
-    score = 0.0
-    total = 0
-    for a, b in itertools.combinations(rest, 2):
-        theirs = eval7.evaluate([a, b] + board_cards)
-        score += 1.0 if mine > theirs else 0.5 if mine == theirs else 0.0
-        total += 1
-    return score / total
-
-
-def equity(hole, board, samples=EQUITY_SAMPLES, rng=None):
-    """Chance `hole` wins at showdown vs a random hand, by simulation."""
-    rng = rng or random.Random(0)
-    dead = set(hole) | set(board)
-    rest = [card for name, card in _CARDS.items() if name not in dead]
     hole_cards = [_CARDS[c] for c in hole]
-    board_cards = [_CARDS[c] for c in board]
+
+    # Every opponent hand's made hand right now: current strength, and the
+    # strong range as the top share of those values.
+    opponents = list(itertools.combinations(rest, 2))
+    values = np.array([eval7.evaluate([_CARDS[a], _CARDS[b]] + board_cards)
+                       for a, b in opponents])
+    mine_now = eval7.evaluate(hole_cards + board_cards)
+    strength = float(np.mean((mine_now > values) + 0.5 * (mine_now == values)))
+    cutoff = np.quantile(values, 1 - STRONG_RANGE_SHARE)
+    strong = np.flatnonzero(values >= cutoff)
+
+    if len(board) == 5:
+        strong_values = values[strong]
+        strong_strength = float(np.mean((mine_now > strong_values) + 0.5 * (mine_now == strong_values)))
+        return (strength, strong_strength)
+
+    # One shared simulation: each sample deals the rest of the board and one
+    # random and one strong opponent hand that don't collide with it. The
+    # random draws are made up front with numpy; the loop only evaluates.
     to_come = 5 - len(board)
-    score = 0.0
-    for _ in range(samples):
-        drawn = rng.sample(rest, 2 + to_come)
-        full = board_cards + drawn[2:]
+    rest_cards = [_CARDS[c] for c in rest]
+    index = {name: i for i, name in enumerate(rest)}
+    pairs = np.array([(index[a], index[b]) for a, b in opponents])
+    randoms = pairs[rng.integers(len(pairs), size=EQUITY_SAMPLES)]
+    strongs = pairs[strong[rng.integers(len(strong), size=EQUITY_SAMPLES)]]
+    # A random card order per sample; the runout is its first cards that
+    # neither opponent holds (at most 4 are skipped).
+    orders = np.argsort(rng.random((EQUITY_SAMPLES, len(rest))), axis=1)[:, : to_come + 4]
+    score = strong_score = 0.0
+    for (a, b), (s1, s2), order in zip(randoms.tolist(), strongs.tolist(), orders.tolist()):
+        taken = (a, b, s1, s2)
+        runout = [c for c in order if c not in taken][:to_come]
+        full = board_cards + [rest_cards[c] for c in runout]
         mine = eval7.evaluate(hole_cards + full)
-        theirs = eval7.evaluate(drawn[:2] + full)
+        theirs = eval7.evaluate([rest_cards[a], rest_cards[b]] + full)
+        strong_theirs = eval7.evaluate([rest_cards[s1], rest_cards[s2]] + full)
         score += 1.0 if mine > theirs else 0.5 if mine == theirs else 0.0
-    return score / samples
+        strong_score += 1.0 if mine > strong_theirs else 0.5 if mine == strong_theirs else 0.0
+    equity = score / EQUITY_SAMPLES
+    return (equity, strong_score / EQUITY_SAMPLES, equity - strength)
 
 
 _SUIT_PERMUTATIONS = [dict(zip("cdhs", p)) for p in itertools.permutations("cdhs")]
@@ -102,29 +116,30 @@ def canonical(hole, board):
     )
 
 
-def measures(hole, board):
-    """(strength, equity) for a canonical deal, deterministic per deal."""
+def canonical_features(hole, board):
+    """Features for a canonical deal, seeded from its cards (deterministic)."""
     seed = zlib.crc32(("".join(hole) + "|" + "".join(board)).encode())
-    strength = hand_strength(hole, board)
-    if len(board) == 5:
-        return strength, strength
-    return strength, equity(hole, board, rng=random.Random(seed))
+    return features(hole, board, np.random.default_rng(seed))
+
+
+@lru_cache(maxsize=None)
+def _centroids():
+    data = json.loads(CENTROIDS_PATH.read_text())
+    return {int(street): np.array(rows) for street, rows in data["centroids"].items()}
 
 
 @lru_cache(maxsize=1_000_000)
 def _bucket_canonical(hole, board):
-    strength, eq = measures(hole, board)
     street = len(board)
-    if street == 5:
-        return f"[R{bisect_right(RIVER_STRENGTH_EDGES, strength)}]"
-    level = bisect_right(EQUITY_EDGES[street], eq)
-    potential = bisect_right(POTENTIAL_EDGES[street], eq - strength)
-    return f"[{'F' if street == 3 else 'T'}{level}p{potential}]"
+    centroids = _centroids()[street]
+    point = np.array(canonical_features(hole, board))
+    index = int(np.argmin(((centroids - point) ** 2).sum(axis=1)))
+    return f"[{_STREET_LETTER[street]}{index}]"
 
 
 @lru_cache(maxsize=200_000)
 def card_bucket(hole, board):
-    """Bucket key such as [F7p2] (flop, equity level 7, drawing) or [R12].
+    """Bucket key such as [F87] (flop bucket 87 of 150) or [R12].
 
     hole and board are tuples of card names like ("Ah", "Kd"). A player's
     cards stay fixed while training explores their actions, so this outer

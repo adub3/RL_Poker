@@ -83,7 +83,8 @@ Description=TensorBoard for RL_Poker
 [Service]
 User=$USER
 WorkingDirectory=$REPO
-ExecStart=$REPO/.venv/bin/tensorboard --logdir $REPO/checkpoints/fullgame_100bb/tensorboard --host 127.0.0.1 --port 6006
+# All runs under checkpoints/ (current and archived) show side by side.
+ExecStart=$REPO/.venv/bin/tensorboard --logdir $REPO/checkpoints --host 127.0.0.1 --port 6006
 Restart=always
 
 [Install]

@@ -621,19 +621,23 @@ def test_v5_card_buckets_are_board_relative():
         print("skipped: eval7 not installed")
         return
     bucket = card_buckets.card_bucket
+    number = lambda key: int(key[2:-1])  # noqa: E731  (higher = stronger)
     # Mid pair depends on the board: 9s on K-9-2 rainbow vs on J-T-9 two-tone.
     dry = bucket(("9d", "8c"), ("Kh", "9s", "2c"))
     wet = bucket(("9d", "8c"), ("Jh", "Th", "9s"))
-    assert dry != wet, (dry, wet)
-    level = lambda key: int(key[2:key.index("p")])  # noqa: E731
-    assert level(dry) > level(wet), (dry, wet)
-    # Stronger hands get higher levels on the same board.
-    assert level(bucket(("Ah", "Kd"), ("Kh", "9s", "2c"))) > level(dry)
-    # A flush draw with overcards is "drawing" (potential class 2).
-    assert bucket(("Ah", "Qh"), ("7h", "4h", "2c")).endswith("p2]")
-    # Suit-isomorphic deals share a bucket.
+    assert number(dry) > number(wet), (dry, wet)
+    # A set and second pair both crush a random hand, but not a strong range.
+    set_ = bucket(("7d", "7c"), ("7h", "Kc", "4c"))
+    second_pair = bucket(("Jh", "As"), ("Qd", "2s", "Js"))
+    assert number(set_) > number(second_pair), (set_, second_pair)
+    # A flush draw with overcards gains equity from the cards to come; a
+    # made hand on a coordinated board loses it.
+    draw = card_buckets.canonical_features(*card_buckets.canonical(("Ah", "Qh"), ("7h", "4h", "2c")))
+    vulnerable = card_buckets.canonical_features(*card_buckets.canonical(("9d", "8c"), ("Jh", "Th", "9s")))
+    assert draw[2] > 0.05 and vulnerable[2] < 0 < draw[2], (draw, vulnerable)
+    # Suit-isomorphic deals share a bucket; buckets are deterministic.
     assert bucket(("Ah", "Qh"), ("7h", "4h", "2c")) == bucket(("As", "Qs"), ("2d", "4s", "7s"))
-    # Rivers use strength levels only.
+    # Rivers have their own buckets.
     assert bucket(("Ah", "Kd"), ("Kh", "9s", "2c", "7d", "3s")).startswith("[R")
 
 
