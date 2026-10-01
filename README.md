@@ -68,8 +68,12 @@ curl -fsSL https://raw.githubusercontent.com/adub3/RL_Poker/main/deploy/oracle/s
 This takes a few minutes. It installs Python and the requirements, runs the
 tests, and starts three services:
 
-- `rl-poker-train`: trains continuously and resumes from the newest
-  checkpoint after any restart. It keeps the 6 newest checkpoints.
+- `rl-poker-train@<name>`: one training run per abstraction in `TRAIN_RUNS`
+  (default `v6c v6e`, an A/B test of card buckets) in
+  `checkpoints/run_<name>`. Runs split the cores evenly, each has a memory
+  cap, and each resumes from its newest checkpoint after any restart,
+  keeping the 6 newest. Change the runs with
+  `TRAIN_RUNS="..." deploy/oracle/install_services.sh`.
 - `rl-poker-eval.timer`: measures exploitability of the newest checkpoint
   with local best response every 6 hours, at low priority.
 - `rl-poker-tensorboard`: TensorBoard on port 6006 of the server.
@@ -98,9 +102,9 @@ Charts to watch:
 ### Useful commands (on the server)
 
 ```sh
-journalctl -u rl-poker-train -f        # live training log
-systemctl status rl-poker-train        # is it running?
-sudo systemctl restart rl-poker-train  # restart (resumes from the newest checkpoint)
+journalctl -u 'rl-poker-train@*' -f     # live training logs
+systemctl status 'rl-poker-train@*'    # are they running?
+sudo systemctl restart rl-poker-train@v6c  # restart one run (resumes from its newest checkpoint)
 ```
 
 To copy checkpoints to your own computer (run from the repo there):
@@ -200,7 +204,16 @@ working unchanged; start a new run to get the current rules.
     and `min_raise` is the real minimum on every street. No raise cap.
   - `legacy`: the sizing used before the v2 fix; runs without a `bet_sizing`
     entry used it.
-  - `v5` (default for new runs): v4's betting menu and keys with new
+  - `v6c` (default for new runs) and `v6e`: postflop betting keys that
+    keep the hand's history. Earlier keys held only the current street's
+    actions and the stack-to-pot ratio, so on the turn "limped, flop checked
+    through" and "raised, flop bet and called" were the same state, and the
+    whole postflop game had 396 betting keys. v6 adds the preflop pot type
+    and last raiser and a summary of each earlier street (checked through,
+    bet-called or raised, and who bet). The two differ only in card buckets:
+    `v6c` uses v4's hand categories, `v6e` v5's equity buckets, so a
+    side-by-side run shows which card abstraction does better.
+  - `v5`: v4's betting menu and keys with new
     postflop card buckets (`new_code/card_buckets.py`). A hand is bucketed by
     how it plays on this board, not by its category, using three features:
     equity against a random hand, equity against a strong range (opponent

@@ -25,13 +25,15 @@ DEFAULT_STACK_FRACTIONS = (1 / 4, 1 / 2, 3 / 4)
 # only line up with that sizing. Runs record theirs in run_manifest.json.
 # v5 keeps v4's menu and betting keys and replaces the postflop card buckets
 # with board-relative strength and potential (card_buckets.py).
-BET_SIZINGS = ("legacy", "v2", "v3", "v4", "v5")
-DEFAULT_BET_SIZING = "v5"
+# v6c / v6e add the hand's history to postflop betting keys; they differ only
+# in card buckets (v4's hand categories vs v5's equity buckets).
+BET_SIZINGS = ("legacy", "v2", "v3", "v4", "v5", "v6c", "v6e")
+DEFAULT_BET_SIZING = "v6c"
 # v3 caps raises per street; after the cap a player can only fold, call or
 # jam. Without a cap, min-raise wars made most of the v2 tree (68% of
 # postflop infosets had 3+ raises on the current street).
 # Sizings that cap raises per street (v4 is v3's menu with fixed postflop keys).
-RAISE_CAP_SIZINGS = ("v3", "v4", "v5")
+RAISE_CAP_SIZINGS = ("v3", "v4", "v5", "v6c", "v6e")
 PREFLOP_RAISE_CAP = 4   # open, 3-bet, 4-bet, 5-bet
 POSTFLOP_RAISE_CAP = 3  # bet, raise, re-raise
 # v3 raise sizes when facing a bet on a postflop street.

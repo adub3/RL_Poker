@@ -3,8 +3,10 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/adub3/RL_Poker/main/deploy/oracle/setup.sh | bash
 #
-# Installs Python 3.11 and the requirements, then starts three services:
-#   rl-poker-train        trains continuously, resuming after any restart
+# Installs Python 3.11 and the requirements, then starts the services
+# (deploy/oracle/install_services.sh):
+#   rl-poker-train@<name> one training run per abstraction in TRAIN_RUNS,
+#                         resuming after any restart
 #   rl-poker-eval.timer   measures exploitability (LBR) of the newest checkpoint every 6 hours
 #   rl-poker-tensorboard  TensorBoard on 127.0.0.1:6006 (reach it with an SSH tunnel)
 set -euo pipefail
@@ -37,62 +39,7 @@ uv pip install --python .venv/bin/python -r requirements.txt
 
 chmod +x deploy/oracle/*.sh
 
-sudo tee /etc/systemd/system/rl-poker-train.service >/dev/null <<UNIT
-[Unit]
-Description=RL_Poker MCCFR training
-After=network-online.target
-
-[Service]
-User=$USER
-WorkingDirectory=$REPO
-ExecStart=$REPO/deploy/oracle/train_forever.sh
-Restart=always
-RestartSec=30
-
-[Install]
-WantedBy=multi-user.target
-UNIT
-
-sudo tee /etc/systemd/system/rl-poker-eval.service >/dev/null <<UNIT
-[Unit]
-Description=RL_Poker exploitability of the newest checkpoint
-
-[Service]
-Type=oneshot
-User=$USER
-WorkingDirectory=$REPO
-ExecStart=$REPO/deploy/oracle/eval_latest.sh
-UNIT
-
-sudo tee /etc/systemd/system/rl-poker-eval.timer >/dev/null <<UNIT
-[Unit]
-Description=Measure RL_Poker exploitability every 6 hours
-
-[Timer]
-OnBootSec=1h
-OnUnitActiveSec=6h
-
-[Install]
-WantedBy=timers.target
-UNIT
-
-sudo tee /etc/systemd/system/rl-poker-tensorboard.service >/dev/null <<UNIT
-[Unit]
-Description=TensorBoard for RL_Poker
-
-[Service]
-User=$USER
-WorkingDirectory=$REPO
-# All runs under checkpoints/ (current and archived) show side by side.
-ExecStart=$REPO/.venv/bin/tensorboard --logdir $REPO/checkpoints --host 127.0.0.1 --port 6006
-Restart=always
-
-[Install]
-WantedBy=multi-user.target
-UNIT
-
-sudo systemctl daemon-reload
-sudo systemctl enable --now rl-poker-train.service rl-poker-eval.timer rl-poker-tensorboard.service
+deploy/oracle/install_services.sh
 
 cat <<DONE
 
@@ -102,6 +49,6 @@ Training is running. On your own computer:
 
 then open http://localhost:6006 for TensorBoard.
 
-Logs:    journalctl -u rl-poker-train -f
-Status:  systemctl status rl-poker-train rl-poker-eval.timer rl-poker-tensorboard
+Logs:    journalctl -u 'rl-poker-train@*' -f
+Status:  systemctl status 'rl-poker-train@*' rl-poker-eval.timer rl-poker-tensorboard
 DONE

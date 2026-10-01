@@ -659,6 +659,47 @@ def test_v5_keys_use_card_buckets_and_v4_betting():
     assert v5[v5.index("[pos:"):] == v4[v4.index("[pos:"):], (v5, v4)
 
 
+def test_v6_history_keys_match_actual_play():
+    try:
+        import pyspiel
+    except ImportError:
+        print("skipped: pyspiel not installed")
+        return
+    from abstraction import postflop_betting_context
+
+    game = pyspiel.load_game("universal_poker", game_config)
+    rng = np.random.default_rng(11)
+    menu = PreflopActionAbstractor(big_blind=100, starting_stack=10_000, bet_sizing="v6c")
+    checked = 0
+    for _ in range(400):
+        state = game.new_initial_state()
+        raises = {}  # street -> list of players who raised, from OpenSpiel itself
+        while not state.is_terminal():
+            if state.is_chance_node():
+                actions, probs = zip(*state.chance_outcomes())
+                state.apply_action(int(rng.choice(actions, p=probs)))
+                continue
+            parsed = parse_poker_string(state.information_state_string())
+            street = int(parsed["Round"])
+            if street > 0:
+                key = postflop_betting_context(parsed, "v6c")
+                pre = raises.get(0, [])
+                expected_pf = "L" if not pre else ("S3"[min(len(pre), 2) - 1] if len(pre) < 3 else "4") + str(pre[-1])
+                assert f"[pf:{expected_pf}]" in key, (key, raises, parsed)
+                summary = []
+                for s in range(1, street):
+                    r = raises.get(s, [])
+                    summary.append("x" if not r else ("b" if len(r) == 1 else "r") + str(r[-1]))
+                assert f"[h:{','.join(summary) or '-'}]" in key, (key, raises, parsed)
+                checked += 1
+            specs = [s for s in menu.select_action_specs_direct(parsed) if s.key != "fold"]
+            choice = specs[int(rng.integers(len(specs)))]
+            if int(choice) > 1:
+                raises.setdefault(street, []).append(state.current_player())
+            state.apply_action(int(choice))
+    assert checked > 300, checked
+
+
 if __name__ == "__main__":
     test_strategy_table_regret_matching()
     test_average_strategy_uses_linear_weight()
@@ -688,4 +729,5 @@ if __name__ == "__main__":
     test_v3_caps_raises_per_street()
     test_v5_card_buckets_are_board_relative()
     test_v5_keys_use_card_buckets_and_v4_betting()
+    test_v6_history_keys_match_actual_play()
     print("ai core tests passed")

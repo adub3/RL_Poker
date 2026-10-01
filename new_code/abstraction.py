@@ -414,13 +414,61 @@ def _postflop_context_v4(sequences, player, street, big_blind, starting_stack):
     return f"[pos:P{player}][st:{street}][spr:{spr_bucket}][{seq_str}]"
 
 
+# v6 runs differ only in card buckets: v6c uses the hand categories of
+# _classify_cards (as v4), v6e the equity buckets of card_buckets.py (as v5).
+V6_SIZINGS = ("v6c", "v6e")
+
+# v6 seat order: P1 (small blind) acts first preflop, P0 first on later
+# streets (game_config firstPlayer "2 1 1 1"). The info string does not name
+# who made each action, so v6 reads it from the order of play.
+_V6_FIRST_ACTOR = {0: 1}  # street -> first player; postflop streets: P0
+
+
+def _street_summary(tokens, first_actor):
+    """(raises on the street, who made the last raise or None)."""
+    raises, last, actor = 0, None, first_actor
+    for token in tokens:
+        if token == "f":
+            break
+        if token[0] == "r":
+            raises += 1
+            last = actor
+        actor = 1 - actor
+    return raises, last
+
+
+def _postflop_context_v6(sequences, player, street, big_blind, starting_stack):
+    """
+    Postflop betting key for v6 runs: v4's key for the current street plus
+    the hand's history, which earlier keys forgot after each street.
+
+      [pf:...]  preflop pot: L limped, S single raise, 3 3-bet, 4 4-bet or
+                more, followed by the last raiser (0 or 1; none if limped)
+      [h:...]   each earlier postflop street: x checked through, b bet and
+                called, r raised (2+ raises), followed by who bet last
+    """
+    streets = sequences.split("|")
+    raises, last = _street_summary(PREFLOP_SEQUENCE_TOKEN_RE.findall(streets[0]), _V6_FIRST_ACTOR[0])
+    preflop = "L" if raises == 0 else "S3"[min(raises, 2) - 1] + str(last) if raises < 3 else f"4{last}"
+    history = []
+    for earlier in streets[1:-1]:
+        raises, last = _street_summary(PREFLOP_SEQUENCE_TOKEN_RE.findall(earlier), 0)
+        history.append("x" if raises == 0 else f"{'b' if raises == 1 else 'r'}{last}")
+    current = _postflop_context_v4(sequences, player, street, big_blind, starting_stack)
+    split = current.index("[spr:")
+    return f"{current[:split]}[pf:{preflop}][h:{','.join(history) or '-'}]{current[split:]}"
+
+
 def postflop_betting_context(data_dict, bet_sizing=None, big_blind=100, starting_stack=10_000):
     """Postflop betting key. Runs before v4 keep the original (size-blind) keys:
     they read every first bet on a street as pot-sized, since they treated the
-    whole-hand totals in Sequences and Pot as amounts for the street."""
+    whole-hand totals in Sequences and Pot as amounts for the street. v6 adds
+    the hand's history (see _postflop_context_v6)."""
     sequences = data_dict.get("Sequences", "") or ""
     player = int(data_dict.get("Player", 0) or 0)
     street = int(data_dict.get("Round", 1) or 1)
+    if bet_sizing in V6_SIZINGS:
+        return _postflop_context_v6(sequences, player, street, big_blind, starting_stack)
     if bet_sizing in ("v4", "v5"):
         return _postflop_context_v4(sequences, player, street, big_blind, starting_stack)
     pot = int(data_dict.get("Pot", 0) or 0)
@@ -584,7 +632,7 @@ def abstractioncards_street_aware(data_dict, bet_sizing=None):
     hand-category buckets of _classify_cards."""
     if not data_dict.get("Public"):
         return preflop_lossless_cards(data_dict)
-    if bet_sizing == "v5":
+    if bet_sizing in ("v5", "v6e"):
         from card_buckets import card_bucket
 
         return card_bucket(tuple(data_dict.get("Private") or ()), tuple(data_dict["Public"]))

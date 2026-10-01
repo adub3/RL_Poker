@@ -13,6 +13,9 @@ ITERATIONS_PER_WORKER="${ITERATIONS_PER_WORKER:-100000}"
 MERGE_EVERY="${MERGE_EVERY:-25}"
 CHECKPOINT_EVERY="${CHECKPOINT_EVERY:-400}"
 KEEP_CHECKPOINTS="${KEEP_CHECKPOINTS:-6}"
+# Abstraction for a new run (empty: the trainer's default). A resumed run
+# always keeps the one recorded in its run_manifest.json.
+BET_SIZING="${BET_SIZING:-}"
 
 cd "$REPO"
 mkdir -p "$RUN_DIR"
@@ -25,6 +28,9 @@ while true; do
     echo "$(date '+%Y-%m-%d %H:%M:%S') resuming from $latest"
   else
     echo "$(date '+%Y-%m-%d %H:%M:%S') starting a new run in $RUN_DIR"
+    if [[ -n "$BET_SIZING" ]]; then
+      resume=(--bet-sizing "$BET_SIZING")
+    fi
   fi
 
   .venv/bin/python -u tools/training/train_preflop_parallel.py \
