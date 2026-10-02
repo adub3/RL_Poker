@@ -162,6 +162,10 @@ def train_worker(worker_id, args, result_queue, command_queue):
     the parent sums every worker's changes and sends the sum back, and the
     worker applies the other workers' part before the next chunk. So all
     workers learn from each other, like one run using every core.
+
+    After applying the sum, every worker's table equals the shared table, so
+    worker 0 writes checkpoints and metrics from its own table and the parent
+    keeps no copy. With one worker that halves memory.
     """
     try:
         import pyspiel
@@ -195,6 +199,7 @@ def train_worker(worker_id, args, result_queue, command_queue):
 
         remaining = int(args.iterations_per_worker)
         stage = 0
+        writer = None
         while remaining > 0:
             stage += 1
             chunk = min(int(args.merge_every), remaining)
@@ -223,12 +228,37 @@ def train_worker(worker_id, args, result_queue, command_queue):
                     "changes": own_changes,
                 }
             )
-            if remaining > 0:
-                everyone = command_queue.get()
-                add_table_into(trainer.table, everyone)
-                add_table_into(trainer.table, own_changes, sign=-1.0)
-                del everyone, own_changes
+            message = command_queue.get()
+            add_table_into(trainer.table, message["sum"])
+            add_table_into(trainer.table, own_changes, sign=-1.0)
+            del own_changes
+            message.pop("sum")
+            if worker_id == 0 and message["checkpoint"]:
+                if writer is None:
+                    writer = open_writer(default_logdir(args.output_dir))
+                checkpoint_path, metrics = write_stage(
+                    Path(args.output_dir),
+                    stage,
+                    message["metas"],
+                    trainer.table,
+                    start_iteration=args.start_iteration,
+                    base_weight_total=args.base_weight_total if args.resume_from else 0,
+                    workers=args.workers,
+                    writer=writer,
+                )
+                gc.collect()
+                _malloc_trim()
+                print(
+                    f"stage={stage}/{message['stages']} "
+                    f"iteration={metrics['effective_iteration']} "
+                    f"infosets={metrics['infosets']} "
+                    f"iter_per_sec={metrics['effective_worker_iterations_per_second']:.2f} "
+                    f"checkpoint={checkpoint_path}",
+                    flush=True,
+                )
 
+        if writer is not None:
+            writer.close()
         result_queue.put({"type": "done", "worker_id": worker_id})
     except Exception as exc:
         result_queue.put(
@@ -369,12 +399,8 @@ def run(args, resume_from_path=None):
     for worker in workers:
         worker.start()
 
-    # Load the shared table AFTER forking so workers don't inherit its COW
-    # pages; each worker loads its own copy of the resumed table.
-    shared_table = load_table(resume_from_path) if resume_from_path else StrategyTable()
-    if resume_from_path:
-        print(f"resumed table loaded post-fork: {len(shared_table.data)} infosets")
-
+    # Workers load the resumed table themselves; the parent only relays
+    # changes between them and keeps no copy of the table.
     done = 0
 
     def next_message():
@@ -397,7 +423,6 @@ def run(args, resume_from_path=None):
                 continue
             return message
 
-    writer = open_writer(default_logdir(output_dir))
     print(f"TensorBoard logs: {default_logdir(output_dir)}")
     try:
         for stage in range(1, stages + 1):
@@ -407,32 +432,15 @@ def run(args, resume_from_path=None):
                 message = next_message()
                 add_table_into(stage_sum, message.pop("changes"))
                 snapshots_meta.append(message)
-            add_table_into(shared_table, stage_sum)
-            if stage < stages:
-                for command_queue in command_queues:
-                    command_queue.put(stage_sum.data)
+            checkpoint = stage % args.checkpoint_every == 0 or stage == stages
+            for command_queue in command_queues:
+                command_queue.put({
+                    "sum": stage_sum.data,
+                    "metas": snapshots_meta,
+                    "checkpoint": checkpoint,
+                    "stages": stages,
+                })
             del stage_sum
-
-            if stage % args.checkpoint_every == 0 or stage == stages:
-                checkpoint_path, metrics = write_stage(
-                    output_dir,
-                    stage,
-                    snapshots_meta,
-                    shared_table,
-                    start_iteration=args.start_iteration,
-                    base_weight_total=args.base_weight_total if resume_from_path else 0,
-                    workers=args.workers,
-                    writer=writer,
-                )
-                gc.collect()
-                _malloc_trim()
-                print(
-                    f"stage={stage}/{stages} iteration={metrics['effective_iteration']} "
-                    f"infosets={metrics['infosets']} "
-                    f"iter_per_sec={metrics['effective_worker_iterations_per_second']:.2f} "
-                    f"checkpoint={checkpoint_path}",
-                    flush=True,
-                )
 
         while done < args.workers:
             next_message()
@@ -440,8 +448,6 @@ def run(args, resume_from_path=None):
         for worker in workers:
             worker.terminate()
         raise
-    finally:
-        writer.close()
 
     for worker in workers:
         worker.join()

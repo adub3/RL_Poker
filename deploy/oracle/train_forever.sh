@@ -9,9 +9,11 @@ RUN_DIR="${RUN_DIR:-$REPO/checkpoints/fullgame_100bb}"
 # Leave one core for evaluation, TensorBoard and the system. Workers sync in
 # lockstep, so one slowed-down worker would hold up all of them.
 WORKERS="${WORKERS:-$(( $(nproc) > 1 ? $(nproc) - 1 : 1 ))}"
-ITERATIONS_PER_WORKER="${ITERATIONS_PER_WORKER:-100000}"
+ITERATIONS_PER_WORKER="${ITERATIONS_PER_WORKER:-1000000}"
 MERGE_EVERY="${MERGE_EVERY:-25}"
-CHECKPOINT_EVERY="${CHECKPOINT_EVERY:-400}"
+# Syncs between checkpoints: 2000 x 25 = 50k iterations per worker. Large
+# tables take a while to save, so checkpoints are spaced out.
+CHECKPOINT_EVERY="${CHECKPOINT_EVERY:-2000}"
 KEEP_CHECKPOINTS="${KEEP_CHECKPOINTS:-6}"
 # Abstraction for a new run (empty: the trainer's default). A resumed run
 # always keeps the one recorded in its run_manifest.json.
