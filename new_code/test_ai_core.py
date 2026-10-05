@@ -209,25 +209,37 @@ def test_worker_table_merge_sums_sparse_fields_exactly():
 def test_save_and_load_table_roundtrip():
     table = StrategyTable()
     table.add_regret("root", 1, 3)
+    table.add_regret("root", 2, -1)
+    table.add_average_strategy("root", [1, 2], [0.25, 0.75], weight=2)
 
     with tempfile.TemporaryDirectory() as directory:
         path = os.path.join(directory, "table.json")
         save_table(table, path)
         loaded = load_table(path)
 
-    assert loaded.data == table.data
+    # Saved nodes add their average strategy, which tables don't keep in memory.
+    saved = loaded.data["root"]
+    assert {k: v for k, v in saved.items() if k != "strategy"} == table.data["root"]
+    assert saved["strategy"] == {"1": 0.25, "2": 0.75}
+    assert "strategy" not in table.data["root"]
 
 
 def test_save_and_load_compressed_table_roundtrip():
     table = StrategyTable()
     table.add_regret("root", 1, 3)
+    table.add_regret("root", 2, -1)
+    table.add_average_strategy("root", [1, 2], [0.25, 0.75], weight=2)
 
     with tempfile.TemporaryDirectory() as directory:
         path = os.path.join(directory, "table.json.gz")
         save_table(table, path)
         loaded = load_table(path)
 
-    assert loaded.data == table.data
+    # Saved nodes add their average strategy, which tables don't keep in memory.
+    saved = loaded.data["root"]
+    assert {k: v for k, v in saved.items() if k != "strategy"} == table.data["root"]
+    assert saved["strategy"] == {"1": 0.25, "2": 0.75}
+    assert "strategy" not in table.data["root"]
 
 
 def test_pruning_keeps_terminal_actions_and_drops_bad_regrets():

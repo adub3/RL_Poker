@@ -36,14 +36,18 @@ STRATEGIES_DIR = Path("checkpoints/fullgame_100bb/strategies")
 
 
 def export_checkpoint(ckpt_path: Path, out_db: Path, batch_size: int = 10_000):
-    out_db.parent.mkdir(parents=True, exist_ok=True)
-
     print(f"Reading {ckpt_path.name} ...", end=" ", flush=True)
     t0 = time.perf_counter()
     with gzip.open(ckpt_path, "rt") as f:
         data = json.load(f)
     print(f"{len(data):,} nodes  ({time.perf_counter()-t0:.1f}s)")
+    export_nodes(data, out_db, batch_size)
 
+
+def export_nodes(data, out_db: Path, batch_size: int = 10_000):
+    """Write {infoset: node} (a loaded checkpoint, or a live training table)
+    to a strategy DB of average strategies (normalized strategy_sum)."""
+    out_db.parent.mkdir(parents=True, exist_ok=True)
     print(f"Writing {out_db.name} ...", end=" ", flush=True)
     t1 = time.perf_counter()
 

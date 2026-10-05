@@ -242,7 +242,7 @@ class StrategyTable:
     def _delta_node(self, infoset):
         return self.delta.setdefault(
             infoset,
-            {"regret": {}, "strategy": {}, "strategy_sum": {}, "visits": 0},
+            {"regret": {}, "strategy_sum": {}, "visits": 0},
         )
 
     def ensure_infoset(self, infoset, legal_actions, action_keys=None):
@@ -250,16 +250,17 @@ class StrategyTable:
             infoset = sys.intern(str(infoset))
         if action_keys is None:
             action_keys = _action_keys(legal_actions)
+        # Nodes hold regrets and the average-strategy accumulator only. The
+        # current strategy is recomputed from the regrets whenever it is
+        # needed; storing it took about a third of the table's memory.
         node = self.data.setdefault(
             infoset,
-            {"regret": {}, "strategy": {}, "strategy_sum": {}, "visits": 0},
+            {"regret": {}, "strategy_sum": {}, "visits": 0},
         )
         regret = node["regret"]
-        strategy = node["strategy"]
         strategy_sum = node["strategy_sum"]
         for key in action_keys:
             regret.setdefault(key, 0.0)
-            strategy.setdefault(key, 0.0)
             strategy_sum.setdefault(key, 0.0)
         return node
 
@@ -276,14 +277,8 @@ class StrategyTable:
             normalizer += positive
 
         if normalizer > 0:
-            probs = [positive / normalizer for positive in positive_regrets]
-        else:
-            probs = [1.0 / len(legal_actions) for _ in legal_actions]
-
-        strategy = node["strategy"]
-        for key, prob in zip(action_keys, probs):
-            strategy[key] = prob
-        return probs
+            return [positive / normalizer for positive in positive_regrets]
+        return [1.0 / len(legal_actions) for _ in legal_actions]
 
     def add_regret(self, infoset, action, amount, floor=None):
         key = _action_key(action)
@@ -337,7 +332,7 @@ class StrategyTable:
         for infoset, node in self.data.items():
             total = sum(float(value) for value in node["strategy_sum"].values())
             if total <= 0:
-                actions = list(node["strategy"].keys())
+                actions = list(node.get("regret") or node.get("strategy") or {})
                 if not actions:
                     average[infoset] = {}
                 else:
@@ -352,13 +347,8 @@ class StrategyTable:
         return average
 
     def current_strategy(self):
-        return {
-            infoset: {
-                action: float(prob)
-                for action, prob in node.get("strategy", {}).items()
-            }
-            for infoset, node in self.data.items()
-        }
+        """Regret-matching strategy of every infoset, from its regrets."""
+        return {infoset: _regret_matched(node) for infoset, node in self.data.items()}
 
 
 def merge_strategy_tables(tables):
@@ -411,23 +401,21 @@ def add_table_into(target, source, sign=1.0):
     """target += sign * source for regret, strategy_sum and visits, in place.
 
     target is a StrategyTable or its data dict; source likewise. Actions only
-    in source are added to target (current strategy entries start at 0).
+    in source are added to target.
     """
     target_data = target.data if isinstance(target, StrategyTable) else target
     source_data = source.data if isinstance(source, StrategyTable) else source
     for infoset, node in source_data.items():
         target_node = target_data.setdefault(
             infoset,
-            {"regret": {}, "strategy": {}, "strategy_sum": {}, "visits": 0},
+            {"regret": {}, "strategy_sum": {}, "visits": 0},
         )
         target_node["visits"] += int(sign * int(node.get("visits", 0)))
-        target_strategy = target_node["strategy"]
         for field in ("regret", "strategy_sum"):
             target_field = target_node[field]
             for action, value in node.get(field, {}).items():
                 key = _action_key(action)
                 target_field[key] = float(target_field.get(key, 0.0)) + sign * float(value)
-                target_strategy.setdefault(key, 0.0)
 
 
 def linear_weight(effective_iteration):
@@ -1467,12 +1455,43 @@ def save_table(table, path=None):
         open_fn = lambda filename, mode: gzip.open(filename, mode, compresslevel=1)
     else:
         open_fn = open
+    # Each node is saved with "strategy": its average strategy, which charts
+    # and reports read from checkpoints but tables don't keep in memory.
     # Write to a temporary file and rename it into place, so a crash or kill
     # mid-save never leaves a truncated checkpoint behind.
     tmp_path = f"{path}.tmp"
     with open_fn(tmp_path, "wt") as out_file:
-        json.dump(table.data, out_file)
+        out_file.write("{")
+        for index, (infoset, node) in enumerate(table.data.items()):
+            if index:
+                out_file.write(",")
+            out_file.write(json.dumps(infoset))
+            out_file.write(":")
+            out_file.write(json.dumps({**node, "strategy": average_of_node(node)}))
+        out_file.write("}")
     os.replace(tmp_path, path)
+
+
+def _regret_matched(node):
+    regret = node.get("regret", {})
+    positive = {key: max(0.0, float(value)) for key, value in regret.items()}
+    total = sum(positive.values())
+    if total > 0:
+        return {key: value / total for key, value in positive.items()}
+    return {key: 1.0 / len(regret) for key in regret} if regret else {}
+
+
+def average_of_node(node):
+    """A node's average strategy: normalized strategy_sum, or its
+    regret-matching strategy if it has no strategy mass yet."""
+    strategy_sum = node.get("strategy_sum", {})
+    total = sum(float(value) for value in strategy_sum.values())
+    if total > 0:
+        # Actions the infoset offered only in some situations get 0.
+        average = {key: 0.0 for key in node.get("regret", {})}
+        average.update((key, float(value) / total) for key, value in strategy_sum.items())
+        return average
+    return _regret_matched(node)
 
 
 def _default_path(filename):

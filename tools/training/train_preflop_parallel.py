@@ -36,6 +36,8 @@ from ai import (  # noqa: E402
 )
 from const import game_config  # noqa: E402
 from preflop import preflop_coverage_metrics  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "evaluation"))
+from export_strategy_db import export_nodes  # noqa: E402
 from tb_logging import default_logdir, log_training_metrics, open_writer, system_memory_gb  # noqa: E402
 
 
@@ -65,29 +67,6 @@ def game_config_for_stack(stack_bb):
     stack = int(stack_bb) * big_blind
     config["stack"] = f"{stack} {stack}"
     return config, big_blind
-
-
-def finalize_table_strategy(table):
-    for node in table.data.values():
-        actions = sorted(node["strategy"].keys())
-        total_strategy = sum(
-            float(node["strategy_sum"].get(action, 0.0)) for action in actions
-        )
-        if total_strategy > 0:
-            for action in actions:
-                node["strategy"][action] = (
-                    float(node["strategy_sum"].get(action, 0.0)) / total_strategy
-                )
-            continue
-
-        regrets = [max(0.0, float(node["regret"].get(action, 0.0))) for action in actions]
-        normalizer = sum(regrets)
-        if not actions:
-            continue
-        for action, regret in zip(actions, regrets):
-            node["strategy"][action] = (
-                regret / normalizer if normalizer > 0 else 1.0 / len(actions)
-            )
 
 
 def write_run_manifest(output_dir, args):
@@ -182,6 +161,10 @@ def train_worker(worker_id, args, result_queue, command_queue):
             bet_sizing=args.bet_sizing,
         )
         table = load_table(args.resume_from) if args.resume_from else StrategyTable()
+        # Checkpoints carry each node's average strategy for charts; training
+        # doesn't need it in memory.
+        for node in table.data.values():
+            node.pop("strategy", None)
         table.start_recording()
         trainer = LinearMCCFRTrainer(
             game,
@@ -200,6 +183,7 @@ def train_worker(worker_id, args, result_queue, command_queue):
         remaining = int(args.iterations_per_worker)
         stage = 0
         writer = None
+        checkpoints_written = 0
         while remaining > 0:
             stage += 1
             chunk = min(int(args.merge_every), remaining)
@@ -246,6 +230,15 @@ def train_worker(worker_id, args, result_queue, command_queue):
                     workers=args.workers,
                     writer=writer,
                 )
+                checkpoints_written += 1
+                # Write the strategy DB that LBR reads straight from memory,
+                # so evaluation never reloads a multi-GB checkpoint. Every few
+                # checkpoints: a large table takes minutes to export.
+                if (checkpoint_path and args.export_db_every
+                        and checkpoints_written % args.export_db_every == 0):
+                    iters = checkpoint_path.name.split("iter_")[1].split(".")[0]
+                    export_nodes(trainer.table.data,
+                                 checkpoint_path.parent / "strategies" / f"strategy_{iters}.db")
                 gc.collect()
                 _malloc_trim()
                 print(
@@ -296,10 +289,8 @@ def write_stage(
 ):
     # shared_table is the resumed table (if any) plus every worker's changes.
     stage_start = time.perf_counter()
-    merge_start = time.perf_counter()
-    finalize_table_strategy(shared_table)
     merged = shared_table
-    merge_seconds = time.perf_counter() - merge_start
+    merge_seconds = 0.0
     merged_iteration = sum(int(s["local_iterations"]) for s in snapshots_meta)
     effective_iteration = int(start_iteration) + merged_iteration
     checkpoint_path = None
@@ -482,6 +473,13 @@ def main():
         help="Write a checkpoint and metrics row every N syncs.",
     )
     parser.add_argument("--output-dir", default="auto")
+    parser.add_argument(
+        "--export-db-every",
+        type=int,
+        default=4,
+        help="Write the strategy DB that LBR reads every N checkpoints, from "
+             "memory (0: never; evaluation then exports it from the checkpoint).",
+    )
     parser.add_argument(
         "--smoke-benchmark",
         action="store_true",

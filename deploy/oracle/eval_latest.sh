@@ -13,7 +13,19 @@ LBR_WORKERS="${LBR_WORKERS:-2}"
 cd "$REPO"
 for run in $EVAL_RUNS; do
   run_dir="$REPO/checkpoints/$run"
-  latest="$(ls "$run_dir"/mccfr_table_iter_*.json.gz 2>/dev/null | sort | tail -n 1 || true)"
+  # Newest checkpoint whose strategy DB training already wrote (exporting a
+  # large checkpoint here would reload the whole table); else the newest.
+  latest=""
+  for ckpt in $(ls "$run_dir"/mccfr_table_iter_*.json.gz 2>/dev/null | sort -r); do
+    iters="$(basename "$ckpt" | sed -E 's/mccfr_table_iter_([0-9]+).*/\1/')"
+    if [[ -f "$run_dir/strategies/strategy_${iters}.db" ]]; then
+      latest="$ckpt"
+      break
+    fi
+  done
+  if [[ -z "$latest" ]]; then
+    latest="$(ls "$run_dir"/mccfr_table_iter_*.json.gz 2>/dev/null | sort | tail -n 1 || true)"
+  fi
   if [[ -z "$latest" ]]; then
     echo "No checkpoints yet in $run_dir"
     continue
